@@ -535,6 +535,8 @@ class OperationManager:
                 raise
             return dict(audit, recovery_id=pending['recovery_id'], resumed=True)
         try:
+            if self.marker.is_symlink():
+                raise ValueError('symlinked session marker')
             content = self.marker.read_bytes()
             marker = json.loads(content)
         except (OSError, ValueError) as exc:
@@ -560,6 +562,8 @@ class OperationManager:
                 raise RecoveryRequired('build job evidence is unavailable or unfinished') from exc
 
         records = self.store.records()
+        if not records:
+            raise RecoveryRequired('standalone session has no completed lifecycle evidence')
         refs = self.references.load()
         from .state import StateStore
         snapshot = StateStore(self.project.state_file).load()
@@ -625,6 +629,22 @@ class OperationManager:
                     old.get('application') != ref.application
                     or old.get('generation') != ref.generation):
                 raise RecoveryRequired('saved evaluation state contradicts runtime identity')
+
+        # Read all terminal outcomes, including records whose queue files
+        # were removed before the interrupted evaluator finally timed out.
+        for path in sorted(self.project.application_request_result_dir.glob('*.json')):
+            outcome = self.requests.result(path.stem)
+            if outcome is None or outcome.status == ApplicationRequestStatus.PENDING:
+                raise RecoveryRequired('saved request result is missing or unfinished')
+            if outcome.runtime_id is not None:
+                related = refs.get(outcome.runtime_id)
+                if related is None and not any(
+                        record['new_runtime_id'] == outcome.runtime_id
+                        or record['target_runtime_id'] == outcome.runtime_id
+                        for record in records):
+                    raise RecoveryRequired('saved request result has no runtime evidence')
+                if related is not None and outcome.application not in (None, related.application):
+                    raise RecoveryRequired('saved request result targets another application')
 
         queue = []
         for path in self.requests.paths():
