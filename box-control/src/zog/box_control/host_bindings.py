@@ -117,7 +117,10 @@ def resolve(project_root: Path, application: str, program: str) -> tuple[dict, .
     launch-time bindings against the current administrator policy.
     """
     policy = POLICY_PATH
+    certificate_program = application == _CERT_APPLICATION and program in _CERT_PROGRAMS
     if not policy.exists() and not policy.is_symlink():
+        if certificate_program:
+            raise RuntimeOperationError("certificate policy host binding is absent")
         return ()
     try:
         _require_privileged_policy(policy)
@@ -181,4 +184,8 @@ def resolve(project_root: Path, application: str, program: str) -> tuple[dict, .
         if policy_digest is not None:
             entry["policy_digest"] = policy_digest
         selected.append(entry)
+    if certificate_program and (
+            len(selected) != 1
+            or selected[0]["capability"] != _CERT_POLICY_CAPABILITY):
+        raise RuntimeOperationError("certificate policy requires exactly one approved read-only capability")
     return tuple(sorted(selected, key=lambda item: item["capability"]))
