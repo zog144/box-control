@@ -261,7 +261,9 @@ class Reconciler:
                 raise ConfigurationError(
                     f"application {application.name} does not declare program {selected_program}"
                 ) from exc
-            application = replace(application, programs=(chosen,))
+            application = replace(
+                application, programs=(chosen,), selected_program=selected_program,
+            )
         elif application.name == "certify-manage" and len(application.programs) != 1:
             raise ConfigurationError("certify-manage requires exact program selection")
         return self.operations.run(application=application, selection=selection,
