@@ -41,7 +41,8 @@ def reconciler(tmp_path):
 def test_request_selector_is_durable_and_cannot_be_reused_for_another_program(tmp_path):
     store = ApplicationRequestStore(tmp_path / "q", tmp_path / "r")
     request = ApplicationRequest("REQ1", ApplicationRequestOperation.LAUNCH,
-                                 "certify-manage", program_name="renew")
+                                 "certify-manage", created_at=1234.0,
+                                 program_name="renew")
     saved_path = store.submit(request)
     assert store.load(saved_path) == request
     assert store.submit(request) == saved_path
