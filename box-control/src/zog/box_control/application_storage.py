@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import re
 import secrets
+import stat
 import time
 
 from .durability import replace_json, remove_file, _blocked_projects
@@ -117,6 +118,15 @@ class ApplicationStorage:
             path = base / name
             if not path.is_dir() or path.is_symlink() or path.resolve() != path.absolute():
                 raise RuntimeOperationError('prepared writable input is missing or redirected; restore it before launch')
+            if application.execution_identity == 'application':
+                observed = path.lstat()
+                grant = raw['definition'].get('execution_binding')
+                if (not isinstance(grant, dict)
+                        or (observed.st_uid, observed.st_gid) != (grant.get('uid'), grant.get('gid'))
+                        or stat.S_IMODE(observed.st_mode) != 0o700):
+                    raise RuntimeOperationError(
+                        'prepared controller-managed storage ownership or mode has drifted; restore approved state'
+                    )
         binding = raw['definition'].get('execution_binding')
         if application.execution_identity is not None:
             if (binding is None or binding.get("project") != str(self.project.path)
