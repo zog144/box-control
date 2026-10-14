@@ -295,7 +295,8 @@ class BoxControl:
         from .cancellation import cancel_launch
         return cancel_launch(self, application_name, request_id, workspace_id=workspace_id, parameters=parameters)
 
-    def launch_application(self, application_name: str, *, request_id: str | None = None, workspace_id=None, parameters=None):
+    def launch_application(self, application_name: str, *, request_id: str | None = None,
+                           workspace_id=None, parameters=None, program_name=None):
         """Launch or replace according to the application's instance policy."""
         from .workspaces import Workspaces
         with self._mutation(launch_intent=(application_name, request_id, workspace_id, parameters)):
@@ -303,11 +304,21 @@ class BoxControl:
             reconciler = self._reconciler()
             if request_id is not None:
                 Retention(self.project).validate(request_id)
-            historical = reconciler.operations.for_request(request_id, 'launch', application=application_name)
+            historical = reconciler.operations.for_request(
+                request_id, 'launch', application=application_name,
+                selected_program=program_name,
+            )
             if historical is not None:
                 return historical
-            self._bind_direct_request(request_id, ApplicationRequestOperation.LAUNCH, application=application_name, workspace_id=workspace_id)
-            return reconciler.launch_application(application_name, request_id=request_id, workspace_id=workspace_id)
+            self._bind_direct_request(
+                request_id, ApplicationRequestOperation.LAUNCH,
+                application=application_name, workspace_id=workspace_id,
+                program_name=program_name,
+            )
+            return reconciler.launch_application(
+                application_name, request_id=request_id,
+                workspace_id=workspace_id, program_name=program_name,
+            )
 
     def restart_application_runtime(
         self, runtime_id: str, *, request_id: str | None = None
@@ -368,11 +379,15 @@ class BoxControl:
             self.project.application_request_result_dir,
         )
 
-    def _bind_direct_request(self, request_id, operation, *, application=None, runtime_id=None, workspace_id=None):
+    def _bind_direct_request(self, request_id, operation, *, application=None,
+                             runtime_id=None, workspace_id=None, program_name=None):
         if request_id is None:
             return
         store = self._request_store()
-        store.submit(ApplicationRequest(request_id, operation, application, runtime_id, time.time(), workspace_id))
+        store.submit(ApplicationRequest(
+            request_id, operation, application, runtime_id,
+            time.time(), workspace_id, program_name,
+        ))
         result = store.result(request_id)
         if result is not None and result.status != ApplicationRequestStatus.PENDING:
             # A result without an operation can be a pre-launch validation failure.
@@ -385,7 +400,9 @@ class BoxControl:
         with ProjectLock(self.project.lock_file, timeout_seconds=self.mutation_lock_timeout_seconds):
             return Retention(self.project).issue()
 
-    def _submit_request(self, operation, *, application=None, runtime_id=None, request_id=None, workspace_id=None, parameters=None):
+    def _submit_request(self, operation, *, application=None, runtime_id=None,
+                        request_id=None, workspace_id=None, parameters=None,
+                        program_name=None):
         self.project.require_state_allowed()
         from .workspaces import Workspaces, WorkspaceError
         workspace_id = Workspaces(self.project).selected(workspace_id, parameters)
@@ -396,6 +413,7 @@ class BoxControl:
             runtime_id=runtime_id,
             created_at=time.time(),
             workspace_id=workspace_id,
+            program_name=program_name,
         )
         with self._mutation(launch_intent=(application, request.request_id, workspace_id, None) if operation == ApplicationRequestOperation.LAUNCH else None):
             if workspace_id is not None and Workspaces(self.project).load(workspace_id)['state'] != 'registered':
@@ -405,13 +423,15 @@ class BoxControl:
         return request
 
     def request_application_launch(
-        self, application_name: str, *, request_id: str | None = None, workspace_id=None, parameters=None
+        self, application_name: str, *, request_id: str | None = None,
+        workspace_id=None, parameters=None, program_name=None
     ):
         """Queue an idempotent launch/replacement for PROJECT_EVALUATION."""
         return self._submit_request(
             ApplicationRequestOperation.LAUNCH,
             application=application_name,
             request_id=request_id, workspace_id=workspace_id, parameters=parameters,
+            program_name=program_name,
         )
 
     def request_application_restart(
