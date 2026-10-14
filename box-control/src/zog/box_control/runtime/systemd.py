@@ -74,6 +74,7 @@ class SystemdServiceDefinition:
     slice_name: str
     application_name: str
     program_name: str
+    selected_program: str | None
     runtime_id: str
     command: tuple[str, ...]
     generation_root: Path
