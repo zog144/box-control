@@ -579,6 +579,19 @@ class BoxControl:
         from .explanations import explain_recovery
         return explain_recovery(self.project, operation_id=operation_id, limit=limit)
 
+    def recover_interrupted_session(self):
+        """Explicit reviewed recovery of an orphaned evaluation session marker.
+
+        This deliberately bypasses ordinary mutation admission ONLY while
+        checking the standalone schema-1 guard, under the project lock.
+        No application operation, cleanup, build or systemd action is run.
+        Any ambiguity preserves the original mutation block.
+        """
+        self.project.require_state_allowed()
+        with ProjectLock(self.project.lock_file,
+                         timeout_seconds=self.mutation_lock_timeout_seconds):
+            return self._reconciler().operations.recover_interrupted_session()
+
     def recovery_status(self):
         """Inspect persisted recovery evidence without writes or systemd access.
 
