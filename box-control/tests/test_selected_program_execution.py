@@ -151,3 +151,56 @@ def test_selector_rejects_wrong_app_policy(tmp_path, monkeypatch):
             closure=None, references={}, selection=None, boot_id="boot-1",
             request_id="REQ1", program_name="renew",
         )
+
+
+
+def test_queued_evaluator_executes_only_selected_program_and_publishes_selector(tmp_path, monkeypatch):
+    r = reconciler(tmp_path)
+    request = ApplicationRequest(
+        "QUEUE1", ApplicationRequestOperation.LAUNCH, "certify-manage",
+        created_at=1234.0, program_name="inspect",
+    )
+    r.requests.submit(request)
+    captured = []
+    def selected(_name, **arguments):
+        captured.append(arguments)
+        return SimpleNamespace(
+            runtime_id="EXACT1", application="certify-manage",
+            replaces_runtime_id=None,
+        )
+    monkeypatch.setattr(r, "_launch_application_loaded", selected)
+    report = ReconcileReport(ok=True)
+    r._process_requests(
+        applications={"certify-manage": app()}, closure=None,
+        references={}, selection=None, boot_id="boot-1", report=report,
+    )
+    assert report.ok
+    assert len(captured) == 1
+    assert captured[0]["program_name"] == "inspect"
+    assert captured[0]["request_id"] == "QUEUE1"
+    assert r.requests.result("QUEUE1").program_name == "inspect"
+    assert r.requests.result("QUEUE1").status == ApplicationRequestStatus.SATISFIED
+    assert not r.requests.paths()
+
+
+def test_queued_selector_conflicting_with_saved_result_blocks_without_execution(tmp_path, monkeypatch):
+    from zog.box_control.errors import RecoveryRequired
+    r = reconciler(tmp_path)
+    r.requests.submit(ApplicationRequest(
+        "QUEUE1", ApplicationRequestOperation.LAUNCH, "certify-manage",
+        created_at=1234.0, program_name="renew",
+    ))
+    r.requests.save_result(ApplicationRequestResult(
+        "QUEUE1", ApplicationRequestOperation.LAUNCH, ApplicationRequestStatus.SATISFIED,
+        application="certify-manage", runtime_id="OLD1",
+        program_name="issue",
+    ))
+    monkeypatch.setattr(r, "_launch_application_loaded",
+                        lambda *args, **kwargs: pytest.fail("must not execute"))
+    with pytest.raises(RecoveryRequired, match="contradicts"):
+        r._process_requests(
+            applications={"certify-manage": app()}, closure=None,
+            references={}, selection=None, boot_id="boot-1",
+            report=ReconcileReport(ok=True),
+        )
+    assert r.requests.paths()
