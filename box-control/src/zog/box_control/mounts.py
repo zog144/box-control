@@ -117,6 +117,10 @@ def inventory(root, mounts, *, read_only_mounts=(), persistent_storage_id=None,
             # Host-owned directory replacement must not select a new inode.
             record['source_device'] = host_by_destination[target]['source_device']
             record['source_inode'] = host_by_destination[target]['source_inode']
+            if 'policy_digest' in host_by_destination[target]:
+                # Record administrator policy content as well as the directory
+                # inode; the protected origin can atomically replace its child.
+                record['policy_digest'] = host_by_destination[target]['policy_digest']
         entries.append(record)
     application_software = None
     if software_binding:
