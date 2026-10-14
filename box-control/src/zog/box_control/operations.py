@@ -71,6 +71,14 @@ class OperationStore:
                 or not set(record['stop_runtime_ids']) <= set(references)
                 or (record['new_runtime_id'] is not None and record['new_runtime_id'] not in references)):
                 raise ValueError('invalid operation runtime identities')
+            selected = record.get('selected_program')
+            if selected is not None:
+                if (record['operation'] != 'launch' or not isinstance(selected, str)
+                        or not record.get('application')
+                        or [p['name'] for p in record['application']['programs']] != [selected]
+                        or not record['new_runtime_id']
+                        or [p.program for p in references[record['new_runtime_id']].programs] != [selected]):
+                    raise ValueError('invalid selected program operation binding')
             if record['operation'] not in {'launch', 'restart', 'terminate'}:
                 raise ValueError('invalid operation kind')
             if record['phase'] not in {'committed', 'failed', 'abandoned'} and (record['finished'] or record['published']):
@@ -187,7 +195,7 @@ class OperationManager:
     def _unpoint(self):
         replace_json(self.marker, {'schema': 1, 'status': 'mutation-incomplete'})
 
-    def for_request(self, request_id, operation, *, application=None, target_runtime_id=None):
+    def for_request(self, request_id, operation, *, application=None, target_runtime_id=None, selected_program=None):
         if request_id is None:
             return None
         for record in self.store.records():
@@ -195,7 +203,8 @@ class OperationManager:
                 continue
             recorded_application = record['application']['name'] if record['application'] else None
             if (record['operation'] != operation or record['target_runtime_id'] != target_runtime_id
-                or (operation == 'launch' and recorded_application != application)):
+                or (operation == 'launch' and recorded_application != application)
+                or record.get('selected_program') != selected_program):
                 raise RuntimeOperationError('request identity already belongs to different intent')
             if not record['finished'] or not record['published']:
                 raise RecoveryRequired('request operation must recover before reuse')
@@ -207,12 +216,13 @@ class OperationManager:
 
     def prepare(self, *, application, selection, references, instance_id,
                 request_id, replaces_runtime_id, boot_id, fingerprint,
-                stop_runtime_ids=(), operation='launch', target_runtime_id=None):
+                stop_runtime_ids=(), operation='launch', target_runtime_id=None,
+                selected_program=None):
         if request_id is not None:
             _validate_request(ApplicationRequest(request_id=request_id,
                 operation=ApplicationRequestOperation(operation),
                 application=application.name if operation == 'launch' else None,
-                runtime_id=target_runtime_id))
+                runtime_id=target_runtime_id, program_name=selected_program))
         pending = None
         if application is not None:
             pending = self.runtime.prepare(application, instance_id=instance_id,
@@ -233,6 +243,7 @@ class OperationManager:
             after[pending.runtime_id] = pending
         record = dict(schema=1, operation_id=secrets.token_hex(16), operation=operation,
             request_id=request_id, target_runtime_id=target_runtime_id,
+            selected_program=selected_program,
             application=asdict(application) if application is not None else None,
             software_binding=application.software_binding if application is not None else None,
             generation_root=str(selection.root.resolve()) if selection is not None else None,
@@ -279,11 +290,12 @@ class OperationManager:
                 target_runtime_id=record['target_runtime_id'], runtime_id=identity,
                 replaced_runtime_id=reference.replaces_runtime_id if reference else None,
                 workspace_id=((record.get('application') or {}).get('workspace_binding') or {}).get('workspace_id'),
-                error=record['error'], updated_at=record['completed_at'])
+                error=record['error'], updated_at=record['completed_at'],
+                program_name=record.get('selected_program'))
             existing = self.requests.result(record['request_id'])
             if existing is not None and existing.status != ApplicationRequestStatus.PENDING:
                 if any(getattr(existing, key) != getattr(result, key) for key in
-                       ('operation', 'status', 'application', 'target_runtime_id', 'runtime_id', 'replaced_runtime_id', 'workspace_id', 'error')):
+                       ('operation', 'status', 'application', 'target_runtime_id', 'runtime_id', 'replaced_runtime_id', 'workspace_id', 'program_name', 'error')):
                     raise RecoveryRequired('request result contradicts authoritative operation')
             self.requests.save_result(result)
             path = self.project.application_request_dir / f"{record['request_id']}.json"
