@@ -458,6 +458,8 @@ class OperationManager:
         return result
 
     def recover(self):
+        if (self.project.state_dir / 'session-recovery-pending.json').exists():
+            raise RecoveryRequired('interrupted session recovery audit must be finalized explicitly')
         records = self.store.records()
         pointed = None
         if self.marker.exists():
@@ -499,6 +501,39 @@ class OperationManager:
         """
         if self.project.path in _blocked_projects:
             raise RecoveryRequired('storage failure interlock requires separate owner review')
+        pending_path = self.project.state_dir / 'session-recovery-pending.json'
+        if pending_path.exists() or pending_path.is_symlink():
+            try:
+                pending = json.loads(pending_path.read_text())
+                if (not isinstance(pending, dict) or set(pending) != {
+                        'schema', 'recovery_id', 'marker_sha256'}
+                        or pending['schema'] != 1
+                        or not isinstance(pending['recovery_id'], str)
+                        or len(pending['recovery_id']) != 32
+                        or any(c not in '0123456789abcdef' for c in pending['recovery_id'])
+                        or not isinstance(pending['marker_sha256'], str)):
+                    raise ValueError('invalid recovery pointer')
+                audit_path = (self.project.state_dir / 'session-recovery' /
+                              (pending['recovery_id'] + '.json'))
+                audit = json.loads(audit_path.read_text())
+                if (audit.get('kind') != 'reviewed-interrupted-session-recovery'
+                        or audit.get('marker_sha256') != pending['marker_sha256']):
+                    raise ValueError('recovery audit and pointer disagree')
+                if self.marker.exists():
+                    marker = json.loads(self.marker.read_text())
+                    if (marker != {'schema': 1, 'status': 'mutation-incomplete'}
+                            or hashlib.sha256(self.marker.read_bytes()).hexdigest()
+                            != pending['marker_sha256']):
+                        raise ValueError('recovery marker changed after audit')
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                raise RecoveryRequired('pending session recovery audit requires investigation') from exc
+            try:
+                remove_file(self.marker)
+                remove_file(pending_path)
+            except PersistenceError:
+                _blocked_projects.add(self.project.path)
+                raise
+            return dict(audit, recovery_id=pending['recovery_id'], resumed=True)
         try:
             content = self.marker.read_bytes()
             marker = json.loads(content)
@@ -618,10 +653,21 @@ class OperationManager:
         audit_dir = self.project.state_dir / 'session-recovery'
         identity = secrets.token_hex(16)
         from .durability import ensure_directory
-        ensure_directory(audit_dir)
-        replace_json(audit_dir / (identity + '.json'), audit)
-        remove_file(self.marker)
-        return dict(audit, recovery_id=identity)
+        try:
+            ensure_directory(audit_dir)
+            replace_json(audit_dir / (identity + '.json'), audit)
+            replace_json(pending_path, {
+                'schema': 1, 'recovery_id': identity,
+                'marker_sha256': audit['marker_sha256'],
+            })
+            remove_file(self.marker)
+            remove_file(pending_path)
+        except PersistenceError:
+            # Even an unlink whose directory fsync failed must retain a
+            # cross-process journal, not silently reopen mutation admission.
+            _blocked_projects.add(self.project.path)
+            raise
+        return dict(audit, recovery_id=identity, resumed=False)
 
     def abandon(self, identity):
         record = self.store.load(self.store.path(identity))
