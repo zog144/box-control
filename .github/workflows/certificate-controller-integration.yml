@@ -9,6 +9,7 @@ on:
       - 'box-control/tests/test_certify_policy_binding.py'
       - 'box-control/tests/test_certify_application_profile.py'
       - 'box-control/tests/test_selected_program_execution.py'
+      - 'box-control/tests/test_selected_program_recovery.py'
       - 'box-control/src/zog/box_control/reconcile.py'
       - 'box-control/src/zog/box_control/requests.py'
       - 'box-control/src/zog/box_control/operations.py'
@@ -67,6 +68,7 @@ jobs:
             box-control/tests/test_certify_policy_binding.py \
             box-control/tests/test_certify_application_profile.py \
             box-control/tests/test_selected_program_execution.py \
+            box-control/tests/test_selected_program_recovery.py \
             box-control/tests/test_host_bindings.py \
             box-control/tests/test_execution_identity.py \
             root-control/tests/test_certificate_policy_binding.py \
