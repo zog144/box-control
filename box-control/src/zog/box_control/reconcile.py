@@ -12,6 +12,7 @@ from .errors import (
     ConfigurationError,
     LifecycleOperationPending,
     RuntimeOperationError,
+    RecoveryRequired,
 )
 from .generation import GenerationStore
 from .model import (
