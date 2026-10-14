@@ -230,17 +230,6 @@ def parse_application(path: Path) -> ApplicationSpec:
     if len(set(names)) != len(names):
         raise ConfigurationError(f"{path}: duplicate program name in application {name}")
 
-    # certify-manage's review-only candidate declares issue, renew and
-    # inspect as simultaneous systemd programs. Launching that declaration
-    # would issue and renew concurrently, not select an authorized operation.
-    # Until the controller supports durable individual-program execution,
-    # a certificate lifecycle app may contain only one runnable program.
-    if name == "certify-manage" and len(programs) != 1:
-        raise ConfigurationError(
-            f"{path}: certify-manage requires one exclusively selected runtime program; "
-            "the multi-operation prototype must not be activated"
-        )
-
     description = values.get("description")
     if description is not None and not isinstance(description, str):
         raise ConfigurationError(f"{path}: application description must be a string")
