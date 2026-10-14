@@ -265,7 +265,7 @@ class Reconciler:
             application = replace(
                 application, programs=(chosen,), selected_program=selected_program,
             )
-        elif application.name == "certify-manage" and len(application.programs) != 1:
+        elif application.name == "certify-manage":
             raise ConfigurationError("certify-manage requires exact program selection")
         return self.operations.run(application=application, selection=selection,
             references=references, instance_id=instance_id, request_id=request_id,
@@ -320,6 +320,8 @@ class Reconciler:
         if request_id is not None:
             existing = self.references.for_request(references, request_id)
             if existing is not None:
+                if program_name is not None and [p.program for p in existing.programs] != [program_name]:
+                    raise RecoveryRequired('saved request runtime conflicts with selected program')
                 return self._accepted_launch(existing)
         try:
             application = applications[application_name]
