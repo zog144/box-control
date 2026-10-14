@@ -504,6 +504,8 @@ class OperationManager:
         pending_path = self.project.state_dir / 'session-recovery-pending.json'
         if pending_path.exists() or pending_path.is_symlink():
             try:
+                if pending_path.is_symlink():
+                    raise ValueError('symlinked recovery pointer')
                 pending = json.loads(pending_path.read_text())
                 if (not isinstance(pending, dict) or set(pending) != {
                         'schema', 'recovery_id', 'marker_sha256'}
@@ -515,6 +517,8 @@ class OperationManager:
                     raise ValueError('invalid recovery pointer')
                 audit_path = (self.project.state_dir / 'session-recovery' /
                               (pending['recovery_id'] + '.json'))
+                if audit_path.is_symlink() or audit_path.parent.is_symlink():
+                    raise ValueError('redirected recovery audit')
                 audit = json.loads(audit_path.read_text())
                 if (audit.get('kind') != 'reviewed-interrupted-session-recovery'
                         or audit.get('marker_sha256') != pending['marker_sha256']):
@@ -606,6 +610,13 @@ class OperationManager:
                         or result.runtime_id != (record['new_runtime_id'] or record['target_runtime_id'])):
                     raise RecoveryRequired('request result contradicts finished operation')
 
+        authoritative_runtime_ids = {
+            record['new_runtime_id'] for record in records
+            if record['operation'] == 'launch'
+            and record['phase'] == 'committed'
+            and record['new_runtime_id'] is not None
+        }
+        current_boot_id = self.boot_id_provider()
         active_instances = set()
         for runtime_id, ref in refs.items():
             if ref.state in {ApplicationRuntimeState.STARTING,
@@ -617,7 +628,11 @@ class OperationManager:
                 continue
             if ref.state != ApplicationRuntimeState.RUNNING or ref.error:
                 raise RecoveryRequired('runtime state is uncertain')
-            if not ref.boot_id or not ref.programs or any(
+            if runtime_id not in authoritative_runtime_ids:
+                raise RecoveryRequired('active runtime lacks a committed launch authority')
+            if ref.boot_id != current_boot_id:
+                raise RecoveryRequired('active runtime belongs to a previous boot')
+            if not ref.programs or any(
                     not program.unit_name or not program.invocation_id
                     for program in ref.programs):
                 raise RecoveryRequired('active runtime identity is incomplete')
