@@ -145,3 +145,21 @@ def test_extra_host_capability_is_rejected_for_certificate_program(tmp_path, mon
     policy.write_text(json.dumps({"schema": 1, "bindings": [entry, export]}))
     with pytest.raises(RuntimeOperationError, match="exactly one"):
         host_bindings.resolve(project.path, "certify-manage", "renew")
+
+
+
+def test_certificate_policy_digest_survives_read_only_mount_inventory(tmp_path, monkeypatch):
+    from zog.box_control.mounts import inventory
+    project, source, _policy, _entry = fixture(tmp_path, monkeypatch)
+    _root_owned_file(monkeypatch)
+    bindings = host_bindings.resolve(project.path, "certify-manage", "renew")
+    observed = inventory(
+        None, [],
+        read_only_mounts=[(source, "/run/zog-host/certify-policy")],
+        host_bindings=bindings,
+    )
+    mount = observed["mounts"][0]
+    assert mount["kind"] == "host-capability"
+    assert mount["access"] == "read-only"
+    assert mount["policy_digest"] == bindings[0]["policy_digest"]
+    assert mount["source_inode"] == source.stat().st_ino
