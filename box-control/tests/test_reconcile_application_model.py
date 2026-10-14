@@ -222,10 +222,17 @@ def test_later_explicit_launch_preserves_replacement_semantics(tmp_path):
         boot_id_provider=lambda: "boot-1")
     assert reconciler.reconcile().ok
     _queue_boot_request(project, "LATER-EXPLICIT", created_at=time.time())
-    result = reconciler.reconcile()
-    assert result.ok, result.errors
-    assert len(transport.started_services) == 2
-    assert transport.stops
+    from zog.box_control.errors import RecoveryRequired
+    with pytest.raises(RecoveryRequired, match="waiting for cleanup"):
+        reconciler.reconcile()
+    # This fake transport cannot complete teardown. Nonetheless the saved
+    # operation proves the later request is a replacement, not absorbed as a
+    # boot request; the controller must not launch its successor prematurely.
+    operation = next(record for record in reconciler.operations.store.records()
+                     if record["request_id"] == "LATER-EXPLICIT")
+    assert operation["stop_runtime_ids"]
+    assert operation["phase"] == "stopping"
+    assert len(transport.started_services) == 1
 
 
 
