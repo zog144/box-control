@@ -151,3 +151,77 @@ def test_second_evaluation_observes_existing_runtime_without_relaunch(tmp_path):
     assert reconciler.reconcile().ok
     assert reconciler.reconcile().ok
     assert len(transport.started_services) == 1
+
+
+
+def _queue_boot_request(project, request_id, *, created_at=1.0):
+    from zog.box_control.requests import ApplicationRequest, ApplicationRequestOperation, ApplicationRequestStore
+    store = ApplicationRequestStore(project.application_request_dir, project.application_request_result_dir)
+    store.submit(ApplicationRequest(request_id=request_id,
+        operation=ApplicationRequestOperation.LAUNCH, application="hello",
+        created_at=created_at))
+    return store
+
+
+def test_queued_boot_launch_precedes_keep_running_policy_without_replacement(tmp_path):
+    project = Project(tmp_path / "project")
+    _write_keep_running(project)
+    project.state_dir.mkdir(parents=True)
+    project.require_state_allowed = lambda: None
+    store = _queue_boot_request(project, "BOOT-LAUNCH1")
+    transport = FakeSystemdTransport()
+    runtime = SystemdServiceRuntime(project, transport)
+    reconciler = Reconciler(project, image_provider=FakeImageProvider(tmp_path / "image-root"),
+        systemd_runtime=runtime, boot_id_provider=lambda: "boot-1")
+    first = reconciler.reconcile()
+    assert first.ok, first.errors
+    assert len(transport.started_services) == 1
+    assert len(transport.stops) == 0
+    assert any("takes precedence" in message for message in first.messages)
+    result = store.result("BOOT-LAUNCH1")
+    assert result.status.value == "satisfied"
+    references = reconciler.references.load()
+    assert references[result.runtime_id].request_id == "BOOT-LAUNCH1"
+    second = reconciler.reconcile()
+    assert second.ok, second.errors
+    assert len(transport.started_services) == 1
+    assert not store.paths()
+
+
+def test_interrupted_boot_policy_start_satisfies_earlier_queued_intent(tmp_path):
+    project = Project(tmp_path / "project")
+    _write_keep_running(project)
+    project.state_dir.mkdir(parents=True)
+    project.require_state_allowed = lambda: None
+    transport = FakeSystemdTransport()
+    runtime = SystemdServiceRuntime(project, transport)
+    reconciler = Reconciler(project, image_provider=FakeImageProvider(tmp_path / "image-root"),
+        systemd_runtime=runtime, boot_id_provider=lambda: "boot-1")
+    first = reconciler.reconcile()
+    assert first.ok, first.errors
+    first_runtime = next(iter(reconciler.references.load()))
+    store = _queue_boot_request(project, "BOOT-QUEUED1", created_at=1.0)
+    second = reconciler.reconcile()
+    assert second.ok, second.errors
+    assert len(transport.started_services) == 1
+    assert transport.stops == []
+    assert store.result("BOOT-QUEUED1").runtime_id == first_runtime
+    assert any("matched committed boot-policy runtime" in x for x in second.messages)
+
+
+def test_later_explicit_launch_preserves_replacement_semantics(tmp_path):
+    import time
+    project = Project(tmp_path / "project")
+    _write_keep_running(project)
+    project.state_dir.mkdir(parents=True)
+    project.require_state_allowed = lambda: None
+    transport = FakeSystemdTransport()
+    reconciler = Reconciler(project, image_provider=FakeImageProvider(tmp_path / "image-root"),
+        systemd_runtime=SystemdServiceRuntime(project, transport),
+        boot_id_provider=lambda: "boot-1")
+    assert reconciler.reconcile().ok
+    _queue_boot_request(project, "LATER-EXPLICIT", created_at=time.time())
+    result = reconciler.reconcile()
+    assert result.ok, result.errors
+    assert len(transport.started_services) == 2
+    assert transport.stops
