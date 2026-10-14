@@ -65,17 +65,9 @@ def _require_privileged_policy(path: Path) -> None:
         raise RuntimeOperationError("host binding policy is not administrator-owned")
 
 
-def _certify_policy_digest(source: str) -> str:
-    """Check the entire trusted policy source, never follow an attacker symlink.
-
-    This is a *nonsecret* administrator-issued intent file. Private DNS API
-    tokens must live solely in the application's 0700 storage, not here.
-    """
-    if source != _CERT_POLICY_SOURCE:
-        raise RuntimeOperationError("certify-policy must use the exact approved source")
-    directory = _safe_directory(source, label="certificate policy")
-    # All ancestors to /etc/zog are root controlled and not writable by an
-    # unprivileged service. The policy dir is neither replaceable nor writable.
+def _require_certificate_policy_directory(directory: Path) -> None:
+    # Parent path privileges are checked in addition to symlink-safe component
+    # traversal; unprivileged service users cannot replace policy.json.
     for parent in (Path("/"), Path("/etc"), Path("/etc/zog"), directory):
         info = parent.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
@@ -83,6 +75,17 @@ def _certify_policy_digest(source: str) -> str:
             raise RuntimeOperationError("certificate policy directory is not administrator controlled")
     if not directory.stat().st_mode & stat.S_IXOTH:
         raise RuntimeOperationError("certificate policy directory is not traversable by application")
+
+
+def _certify_policy_digest(source: str) -> str:
+    """Check the trusted policy file without following symlinks.
+
+    Policy is nonsecret; DNS provider credentials remain only in 0700 state.
+    """
+    if source != _CERT_POLICY_SOURCE:
+        raise RuntimeOperationError("certify-policy must use the exact approved source")
+    directory = _safe_directory(source, label="certificate policy")
+    _require_certificate_policy_directory(directory)
     document = directory / "policy.json"
     try:
         descriptor = os.open(document, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
