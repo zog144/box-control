@@ -95,43 +95,50 @@ wrong source fails closed; the application cannot request a different
 systemd `BindReadOnlyPaths` and kernel-observed mount inspection
 are the next live acceptance steps.
 
-## Unsafe prototype and renewal authorization blocker
+## Exact single-program execution and unattended renewal
 
-The producer's current
-`certify-manage/integration/box-control/application.py` is **review
-only** and declares `issue`, `renew` and `inspect` as simultaneously
-started application programs. Box-control's current API launches all
-programs in an application together. It **does not** independently
-select one CLI operation. In particular, this is unsuitable for an
-unattended renewal timer or for host-triggered live issuance.
+The producer's reviewed `integration/box-control/application.py`
+declares separate `issue`, `renew` and `inspect` runtime programs.
+The application **may now retain all three** in a single declaration.
+The parser no longer rejects that declaration; instead, the controller
+requires an **exact selected program** and an original durable request
+identity whenever launching a `certify-manage` runtime. An unselected
+application-wide certificate launch fails closed, including when only
+one certificate command happens to be declared.
 
-The shared parser now explicitly rejects a
-`certify-manage` application declaring more than one runtime
-program with a clear contract error. This prevents accidental
-activation of the known unsafe prototype and is not a replacement
-for a properly implemented single-operation lifecycle.
+```python
+request_id = control.issue_application_request_id()
+request = control.request_application_launch(
+    "certify-manage", program_name="renew", request_id=request_id,
+)
+# Or execute directly using launch_application(..., program_name="renew",
+# request_id=request_id); never submit both execution modes for the same intent.
+```
 
-**Required next design/producer work:** supply a reviewed
-single-operation invocation mechanism bound to one durable
-controller request/operation identity, precisely one mutually
-exclusive operation (`issue`, `renew`, `inspect`, or `recover`)
-and its already-issued app grant and prepared storage ID. Concurrent
-issuance and renewal must fail closed, including restarts, lost
-replies, old process observations, journal uncertainty and reboot.
-The owner-selected scheduler/caller must run with a strict approved
-cadence and no additional privilege to change hostnames, policy,
-storage or certificate consumers. Repeated ticks must reconcile the
-original request and Certbot operation record, never blindly repeat
-an uncertain call. A timer alone on the present application-wide
-launch API would be unsafe; **no unattended scheduler has been
-enabled**. Role election is irrelevant and no new root-control
-arbitrary-command endpoint should be added.
+The runtime snapshot contains exactly `renew`, not `issue` and
+`inspect`. The original prepared UID/GID, persistent certificate-data
+storage ID, immutable software and policy binding are preserved. An
+unresolved prior singleton execution prevents any new selected operation,
+and root-control independently verifies its selection against the saved
+operation, request, program/unit/command and execution grant before systemd
+starts. A second request may proceed only after prior effects, cleanup,
+and uncertainty are resolved. The original request ID cannot be reused to
+select another program; crash recovery uses its original saved command
+rather than a newly edited application definition.
+
+See the complete [selected-program execution contract](SELECTED-PROGRAM-EXECUTION.md).
+This removes the original **controller-side single-command blocker**, but
+**does not yet install an automatic renewal schedule**. An approved trusted
+caller/timer must use this API with a durable identity, avoid repeating
+uncertain Certbot operations, and verify actual ACME account/certificate
+lineage after each run. No new arbitrary-command root-control endpoint
+or shared application account is required. A timer cannot itself
+authorize new hostname policy or publish private keys.
 
 Never infer certificate readiness from a systemd transient service
-return or from Certbot's exit code alone. Use the certificate manager's
-verified SAN/validity/lineage/issuer status; publication, consumer
-activation, nginx reload and trust validation remain exclusively
-with reviewed host-deploy actions.
+return or from Certbot's exit code alone. Use verified SAN, validity,
+lineage and issuer evidence. Publication, consumer activation, nginx
+reload and trust validation remain separate host-deploy responsibilities.
 
 ## Required host acceptance
 
