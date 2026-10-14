@@ -363,3 +363,38 @@ def test_final_unlink_barrier_failure_leaves_resumable_audit_interlock(tmp_path,
     recovered = control.recover_interrupted_session()
     assert recovered["resumed"]
     assert not pending.exists()
+
+
+
+def test_orphaned_marker_without_lifecycle_authority_cannot_be_cleared(tmp_path):
+    from zog.box_control.api import BoxControl
+    from zog.box_control.durability import replace_json
+    from zog.box_control.errors import RecoveryRequired
+    project = Project(tmp_path / "project")
+    project.state_dir.mkdir(parents=True)
+    project.require_state_allowed = lambda: None
+    marker = project.state_dir / "mutation-incomplete.json"
+    replace_json(marker, {"schema": 1, "status": "mutation-incomplete"})
+    with pytest.raises(RecoveryRequired, match="no completed lifecycle evidence"):
+        BoxControl(project).recover_interrupted_session()
+    assert marker.exists()
+
+
+def test_interrupted_recovery_rejects_unbacked_active_reference(tmp_path):
+    from zog.box_control.errors import RecoveryRequired
+    project, control, reconciler, _transport = _interrupted_finished_evaluation(tmp_path)
+    operation = reconciler.operations.store.records()[0]
+    operation["phase"] = "failed"
+    reconciler.operations.store.save(operation)
+    with pytest.raises(RecoveryRequired, match="committed launch authority"):
+        control.recover_interrupted_session()
+    assert (project.state_dir / "mutation-incomplete.json").exists()
+
+
+def test_interrupted_recovery_rejects_previous_boot_runtime(tmp_path):
+    from zog.box_control.errors import RecoveryRequired
+    project, control, _reconciler, _transport = _interrupted_finished_evaluation(tmp_path)
+    control.boot_id_provider = lambda: "boot-2"
+    with pytest.raises(RecoveryRequired, match="previous boot"):
+        control.recover_interrupted_session()
+    assert (project.state_dir / "mutation-incomplete.json").exists()
