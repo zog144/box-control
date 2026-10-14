@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .diagnostics import Fault, fault_from_exception
 from .boot import current_boot_id
 from .operations import OperationManager
@@ -242,6 +244,7 @@ class Reconciler:
         stop_runtime_ids=(),
         operation="launch",
         target_runtime_id=None,
+        selected_program=None,
     ) -> ApplicationRuntimeReference:
         if request_id is not None:
             existing = self.references.for_request(references, request_id)
@@ -251,12 +254,22 @@ class Reconciler:
         application = ApplicationStorage(self.project).bind(application, selection.generation)
         from .application_software import resolve_binding
         application = resolve_binding(self.project, application, selection)
+        if selected_program is not None:
+            try:
+                chosen = application.program(selected_program)
+            except KeyError as exc:
+                raise ConfigurationError(
+                    f"application {application.name} does not declare program {selected_program}"
+                ) from exc
+            application = replace(application, programs=(chosen,))
+        elif application.name == "certify-manage" and len(application.programs) != 1:
+            raise ConfigurationError("certify-manage requires exact program selection")
         return self.operations.run(application=application, selection=selection,
             references=references, instance_id=instance_id, request_id=request_id,
             replaces_runtime_id=replaces_runtime_id, boot_id=boot_id,
             fingerprint=self._application_fingerprint(closure, application.name),
             stop_runtime_ids=stop_runtime_ids, operation=operation,
-            target_runtime_id=target_runtime_id)
+            target_runtime_id=target_runtime_id, selected_program=selected_program)
 
     def _terminate_live(self, references, live):
         remaining = []
@@ -291,8 +304,12 @@ class Reconciler:
         request_id=None,
         pending_replaced_runtime_id=None,
         workspace_id=None,
+        program_name=None,
     ):
-        historical = self.operations.for_request(request_id, 'launch', application=application_name)
+        historical = self.operations.for_request(
+            request_id, 'launch', application=application_name,
+            selected_program=program_name,
+        )
         if historical is not None:
             return historical
         if request_id is not None:
@@ -306,6 +323,13 @@ class Reconciler:
 
         from .workspaces import Workspaces, WorkspaceError
         application = Workspaces(self.project).resolve(application, workspace_id, self.systemd_runtime.transport, boot_id=boot_id)
+        if program_name is not None and (
+                workspace_id is not None or application.multiple_instances
+                or application.start_policy != ApplicationStartPolicy.EXTERNALLY_CONTROLLED
+                or not application.persistent or application.execution_identity != 'application'):
+            raise ConfigurationError(
+                'selected-program execution requires a persistent externally controlled managed singleton'
+            )
         replaces_runtime_id = pending_replaced_runtime_id
         live = []
         if not application.multiple_instances:
@@ -313,6 +337,10 @@ class Reconciler:
             if any((r.workspace_binding or {}).get('workspace_id') != workspace_id for r in live):
                 raise WorkspaceError('cross-workspace-singleton', 'single-instance application already belongs to another workspace')
             if live:
+                if program_name is not None:
+                    raise LifecycleOperationPending(
+                        'selected-program execution conflicts with unresolved application runtime'
+                    )
                 replaces_runtime_id = live[-1].runtime_id
 
         instance_id = new_application_instance_id(
@@ -330,6 +358,7 @@ class Reconciler:
             replaces_runtime_id=replaces_runtime_id,
             boot_id=boot_id,
             stop_runtime_ids=tuple(reference.runtime_id for reference in live),
+            selected_program=program_name,
         )
 
     def _restart_application_runtime_loaded(
@@ -434,6 +463,7 @@ class Reconciler:
                 else replaced_runtime_id
             ),
             error=error,
+            program_name=request.program_name,
         )
 
     def _queued_boot_launches(self, applications):
@@ -447,6 +477,7 @@ class Reconciler:
             try:
                 request = self.requests.load(path)
                 if (request.operation != ApplicationRequestOperation.LAUNCH
+                        or request.program_name is not None
                         or request.workspace_id is not None
                         or request.application not in applications):
                     continue
@@ -544,11 +575,12 @@ class Reconciler:
 
             try:
                 if request.operation == ApplicationRequestOperation.LAUNCH:
-                    reference = self._prior_policy_launch(
-                        request, prior, applications=applications,
-                        closure=closure, references=references, selection=selection,
-                        boot_id=boot_id,
-                    )
+                    reference = (None if request.program_name is not None else
+                        self._prior_policy_launch(
+                            request, prior, applications=applications,
+                            closure=closure, references=references, selection=selection,
+                            boot_id=boot_id,
+                        ))
                     if reference is None:
                         reference = self._launch_application_loaded(
                             request.application or "",
@@ -559,6 +591,7 @@ class Reconciler:
                             selection=selection,
                             boot_id=boot_id,
                             request_id=request.request_id,
+                            program_name=request.program_name,
                             pending_replaced_runtime_id=(
                                 prior.replaced_runtime_id if prior is not None else None
                             ),
@@ -793,7 +826,8 @@ class Reconciler:
         selection = self.image_provider.ensure(self.project)
         return applications, closure, references, selection, self.boot_id_provider()
 
-    def launch_application(self, application_name, *, request_id=None, workspace_id=None):
+    def launch_application(self, application_name, *, request_id=None,
+                           workspace_id=None, program_name=None):
         context = self._loaded_application_context()
         return self._launch_application_loaded(
             application_name,
@@ -804,6 +838,7 @@ class Reconciler:
             boot_id=context[4],
             request_id=request_id,
             workspace_id=workspace_id,
+            program_name=program_name,
         )
 
     def restart_application_runtime(self, runtime_id, *, request_id=None):
