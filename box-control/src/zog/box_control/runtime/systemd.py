@@ -74,7 +74,6 @@ class SystemdServiceDefinition:
     slice_name: str
     application_name: str
     program_name: str
-    selected_program: str | None
     runtime_id: str
     command: tuple[str, ...]
     generation_root: Path
@@ -106,6 +105,7 @@ class SystemdServiceDefinition:
     software_binding: dict | None = None
     execution_binding: dict | None = None
     host_bindings: tuple[dict, ...] = ()
+    selected_program: str | None = None
 
     def mount_inventory(self):
         from ..mounts import inventory
