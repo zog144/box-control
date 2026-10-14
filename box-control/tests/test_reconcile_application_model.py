@@ -1,4 +1,5 @@
 import json
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -225,3 +226,130 @@ def test_later_explicit_launch_preserves_replacement_semantics(tmp_path):
     assert result.ok, result.errors
     assert len(transport.started_services) == 2
     assert transport.stops
+
+
+
+def _interrupted_finished_evaluation(tmp_path):
+    from zog.box_control.durability import replace_json
+    project = Project(tmp_path / "project")
+    _write_keep_running(project)
+    project.state_dir.mkdir(parents=True)
+    project.require_state_allowed = lambda: None
+    transport = FakeSystemdTransport()
+    provider = FakeImageProvider(tmp_path / "image-root")
+    reconciler = Reconciler(project, image_provider=provider,
+        systemd_runtime=SystemdServiceRuntime(project, transport),
+        boot_id_provider=lambda: "boot-1")
+    report = reconciler.reconcile()
+    assert report.ok, report.errors
+    marker = project.state_dir / "mutation-incomplete.json"
+    replace_json(marker, {"schema": 1, "status": "mutation-incomplete"})
+    from zog.box_control.api import BoxControl
+    return project, BoxControl(project, image_provider=provider,
+        systemd_transport=transport, boot_id_provider=lambda: "boot-1"), reconciler, transport
+
+
+def test_interrupted_schema_one_session_requires_explicit_audited_recovery(tmp_path):
+    project, control, reconciler, transport = _interrupted_finished_evaluation(tmp_path)
+    from zog.box_control.errors import RecoveryRequired
+    from zog.box_control.durability import mutation_guard
+    marker = project.state_dir / "mutation-incomplete.json"
+    assert control.recovery_status().mutation_status == "recovery-required"
+    with pytest.raises(RecoveryRequired):
+        with mutation_guard(project):
+            raise AssertionError("must stay blocked")
+    result = control.recover_interrupted_session()
+    assert result["safety"] == "persisted-record-consistency-only"
+    assert result["kernel_readiness"] == "not-established"
+    assert not result["resumed"]
+    assert result["operation_ids"]
+    assert not marker.exists()
+    audit = project.state_dir / "session-recovery" / (result["recovery_id"] + ".json")
+    assert json.loads(audit.read_text())["kind"] == "reviewed-interrupted-session-recovery"
+    assert control.evaluate().ok
+    assert len(transport.started_services) == 1
+
+
+def test_interrupted_session_recovery_refuses_mismatched_operation_reference(tmp_path):
+    from dataclasses import replace
+    from zog.box_control.errors import RecoveryRequired
+    project, control, reconciler, _transport = _interrupted_finished_evaluation(tmp_path)
+    refs = reconciler.references.load()
+    runtime_id = next(iter(refs))
+    refs[runtime_id] = replace(refs[runtime_id], generation="foreign-generation")
+    reconciler.references.save(refs)
+    marker = project.state_dir / "mutation-incomplete.json"
+    with pytest.raises(RecoveryRequired, match="runtime identity"):
+        control.recover_interrupted_session()
+    assert marker.exists()
+    assert not list((project.state_dir / "session-recovery").glob("*.json"))
+
+
+def test_interrupted_session_recovery_refuses_unfinished_or_unrecorded_work(tmp_path):
+    from zog.box_control.errors import RecoveryRequired
+    from zog.box_control.durability import replace_json
+    project, control, reconciler, _transport = _interrupted_finished_evaluation(tmp_path)
+    record = reconciler.operations.store.records()[0]
+    record["finished"] = False
+    reconciler.operations.store.save(record)
+    with pytest.raises(RecoveryRequired, match="unfinished"):
+        control.recover_interrupted_session()
+    assert (project.state_dir / "mutation-incomplete.json").exists()
+    record["finished"] = True
+    reconciler.operations.store.save(record)
+    replace_json(project.state_dir / "retention-incomplete.json",
+                 {"schema": 1, "deletions": []})
+    with pytest.raises(RecoveryRequired, match="another persistence"):
+        control.recover_interrupted_session()
+
+
+def test_interrupted_session_recovery_refuses_result_mismatch(tmp_path):
+    from zog.box_control.durability import replace_json
+    from zog.box_control.errors import RecoveryRequired
+    project = Project(tmp_path / "project")
+    _write_keep_running(project)
+    project.state_dir.mkdir(parents=True)
+    project.require_state_allowed = lambda: None
+    _queue_boot_request(project, "BOOT-INTENT", created_at=1.0)
+    transport = FakeSystemdTransport()
+    reconciler = Reconciler(project, image_provider=FakeImageProvider(tmp_path / "image-root"),
+        systemd_runtime=SystemdServiceRuntime(project, transport),
+        boot_id_provider=lambda: "boot-1")
+    assert reconciler.reconcile().ok
+    from zog.box_control.api import BoxControl
+    control = BoxControl(project, boot_id_provider=lambda: "boot-1")
+    marker = project.state_dir / "mutation-incomplete.json"
+    replace_json(marker, {"schema": 1, "status": "mutation-incomplete"})
+    path = project.application_request_result_dir / "BOOT-INTENT.json"
+    raw = json.loads(path.read_text())
+    raw["status"] = "failed"
+    replace_json(path, raw)
+    with pytest.raises(RecoveryRequired, match="request result contradicts"):
+        control.recover_interrupted_session()
+    assert marker.exists()
+
+
+def test_final_unlink_barrier_failure_leaves_resumable_audit_interlock(tmp_path, monkeypatch):
+    from zog.box_control import durability, operations
+    from zog.box_control.errors import RecoveryRequired, PersistenceError
+    project, control, _reconciler, _transport = _interrupted_finished_evaluation(tmp_path)
+    original_remove = operations.remove_file
+    pending = project.state_dir / "session-recovery-pending.json"
+    def fail_after_marker_unlink(path):
+        if path == pending:
+            raise PersistenceError("injected final removal failure")
+        return original_remove(path)
+    monkeypatch.setattr(operations, "remove_file", fail_after_marker_unlink)
+    with pytest.raises(PersistenceError):
+        control.recover_interrupted_session()
+    assert pending.exists()
+    assert not (project.state_dir / "mutation-incomplete.json").exists()
+    with pytest.raises(RecoveryRequired):
+        control.request_application_launch("hello")
+    monkeypatch.setattr(operations, "remove_file", original_remove)
+    # A new process loses the volatile storage failure latch but still sees
+    # the durable two-phase recovery pointer.
+    durability._blocked_projects.discard(project.path)
+    recovered = control.recover_interrupted_session()
+    assert recovered["resumed"]
+    assert not pending.exists()
