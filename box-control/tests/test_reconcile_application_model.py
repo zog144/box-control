@@ -351,6 +351,9 @@ def test_final_unlink_barrier_failure_leaves_resumable_audit_interlock(tmp_path,
         control.recover_interrupted_session()
     assert pending.exists()
     assert not (project.state_dir / "mutation-incomplete.json").exists()
+    status = control.recovery_status()
+    assert status.mutation_status == "recovery-required"
+    assert any(f.code == "session-recovery-incomplete" for f in status.faults)
     with pytest.raises(RecoveryRequired):
         control.request_application_launch("hello")
     monkeypatch.setattr(operations, "remove_file", original_remove)
