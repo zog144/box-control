@@ -5,6 +5,7 @@ Runtime references and queued request results are repairable projections.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import time
@@ -488,6 +489,139 @@ class OperationManager:
         if pending:
             remove_file(self.marker)
             _blocked_projects.discard(self.project.path)
+
+    def recover_interrupted_session(self):
+        """Explicit, evidence-checked repair of an orphaned schema-1 session.
+
+        Caller holds ProjectLock. This is not called from automatic
+        OperationManager.recover() and makes no systemd calls or new launches.
+        A failed storage fsync or any inconsistent evidence keeps the guard.
+        """
+        if self.project.path in _blocked_projects:
+            raise RecoveryRequired('storage failure interlock requires separate owner review')
+        try:
+            content = self.marker.read_bytes()
+            marker = json.loads(content)
+        except (OSError, ValueError) as exc:
+            raise RecoveryRequired('interrupted session marker is unreadable') from exc
+        if marker != {'schema': 1, 'status': 'mutation-incomplete'}:
+            raise RecoveryRequired('interrupted session is not a standalone schema-1 guard')
+
+        for name in ('retention-incomplete.json', 'build-pruning.json'):
+            if (self.project.state_dir / name).exists():
+                raise RecoveryRequired('another persistence/reclamation session is unfinished')
+        from .application_storage import ApplicationStorage
+        ApplicationStorage(self.project).admission()
+        # A process scheduled to start or cancel is not conclusively finished
+        # merely because its containing evaluation was terminated.
+        job_dir = self.project.state_dir / 'build-job'
+        for path in sorted(job_dir.glob('*.json')):
+            try:
+                raw = json.loads(path.read_text())
+                if raw['schema'] != 1 or raw['state'] in {
+                        'starting', 'unknown', 'cancelling'}:
+                    raise ValueError('unresolved build job')
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise RecoveryRequired('build job evidence is unavailable or unfinished') from exc
+
+        records = self.store.records()
+        refs = self.references.load()
+        from .state import StateStore
+        snapshot = StateStore(self.project.state_file).load()
+        if not isinstance(snapshot.get('application_runtimes', {}), dict):
+            raise RecoveryRequired('saved evaluation state is invalid')
+        for record in records:
+            if (not record['finished'] or not record['published']
+                    or record['phase'] not in {'committed', 'failed', 'abandoned'}):
+                raise RecoveryRequired('authoritative lifecycle operation is unfinished')
+            saved = RuntimeReferenceStore.decode(record['references'])
+            for runtime_id, prior in saved.items():
+                current = refs.get(runtime_id)
+                if current is None:
+                    # Old completed history can be pruned independently from
+                    # retained operation evidence. No active/cleanup candidate
+                    # can safely be absent from the references.
+                    if prior.state not in TERMINAL or prior.cleanup_pending:
+                        raise RecoveryRequired('operation references an unavailable live runtime')
+                    continue
+                if (current.application != prior.application
+                        or current.instance_id != prior.instance_id
+                        or current.generation != prior.generation
+                        or current.boot_id != prior.boot_id
+                        or current.request_id != prior.request_id
+                        or current.execution_binding != prior.execution_binding
+                        or current.software_view != prior.software_view
+                        or current.software_binding_digest != prior.software_binding_digest
+                        or [(p.program, p.unit_name) for p in current.programs] !=
+                           [(p.program, p.unit_name) for p in prior.programs]):
+                    raise RecoveryRequired('runtime identity contradicts operation journal')
+            if record['request_id']:
+                result = self.requests.result(record['request_id'])
+                expected_status = {
+                    'committed': ApplicationRequestStatus.SATISFIED,
+                    'failed': ApplicationRequestStatus.FAILED,
+                    'abandoned': ApplicationRequestStatus.ABANDONED,
+                }[record['phase']]
+                if (result is None or result.operation.value != record['operation']
+                        or result.status != expected_status
+                        or result.runtime_id != (record['new_runtime_id'] or record['target_runtime_id'])):
+                    raise RecoveryRequired('request result contradicts finished operation')
+
+        active_instances = set()
+        for runtime_id, ref in refs.items():
+            if ref.state in {ApplicationRuntimeState.STARTING,
+                             ApplicationRuntimeState.TERMINATING}:
+                raise RecoveryRequired('runtime transition has no recoverable operation')
+            if ref.state in TERMINAL:
+                if ref.cleanup_pending:
+                    raise RecoveryRequired('terminal runtime still requires cleanup')
+                continue
+            if ref.state != ApplicationRuntimeState.RUNNING or ref.error:
+                raise RecoveryRequired('runtime state is uncertain')
+            if not ref.boot_id or not ref.programs or any(
+                    not program.unit_name or not program.invocation_id
+                    for program in ref.programs):
+                raise RecoveryRequired('active runtime identity is incomplete')
+            if ref.instance_id in active_instances:
+                raise RecoveryRequired('multiple active runtimes claim one instance')
+            active_instances.add(ref.instance_id)
+            old = snapshot.get('application_runtimes', {}).get(runtime_id)
+            if old is not None and (
+                    old.get('application') != ref.application
+                    or old.get('generation') != ref.generation):
+                raise RecoveryRequired('saved evaluation state contradicts runtime identity')
+
+        queue = []
+        for path in self.requests.paths():
+            request = self.requests.load(path)
+            outcome = self.requests.result(request.request_id)
+            if (outcome is not None and
+                    (outcome.operation != request.operation
+                     or outcome.workspace_id != request.workspace_id)):
+                raise RecoveryRequired('queued request disagrees with its saved outcome')
+            if outcome is not None and outcome.status == ApplicationRequestStatus.PENDING:
+                raise RecoveryRequired('queued request has unresolved prior attempt')
+            queue.append(request.request_id)
+
+        # One durable audit precedes the guard removal. Never rewrite or
+        # silently unlink other evidence to manufacture a clean project.
+        audit = {
+            'schema': 1, 'kind': 'reviewed-interrupted-session-recovery',
+            'marker_sha256': hashlib.sha256(content).hexdigest(),
+            'observed_at': time.time(), 'boot_id': self.boot_id_provider(),
+            'operation_ids': sorted(r['operation_id'] for r in records),
+            'runtime_ids': sorted(refs),
+            'queued_request_ids': sorted(queue),
+            'safety': 'persisted-record-consistency-only',
+            'kernel_readiness': 'not-established',
+        }
+        audit_dir = self.project.state_dir / 'session-recovery'
+        identity = secrets.token_hex(16)
+        from .durability import ensure_directory
+        ensure_directory(audit_dir)
+        replace_json(audit_dir / (identity + '.json'), audit)
+        remove_file(self.marker)
+        return dict(audit, recovery_id=identity)
 
     def abandon(self, identity):
         record = self.store.load(self.store.path(identity))
