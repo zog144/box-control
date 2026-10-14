@@ -1,0 +1,55 @@
+name: Certificate controller integration
+
+on:
+  push:
+    branches: [unstable]
+    paths:
+      - 'box-control/src/zog/box_control/application_storage.py'
+      - 'box-control/src/zog/box_control/host_bindings.py'
+      - 'box-control/tests/test_certify_policy_binding.py'
+      - 'box-control/tests/test_execution_identity.py'
+      - '.github/workflows/certificate-controller-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certificate-policy-and-private-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}/box-control/src:${{ github.workspace }}/root-control/src:${{ github.workspace }}/companions/zog/src
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out exact root-control security companion
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/root-control
+          ref: d24714b0670441c0b5cf35fc5f19c4888d969565
+          path: root-control
+      - name: Check out known compatible public image-build source
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/zog
+          ref: d47d86b363824c718d9c165124cb55bbed12e0f9
+          path: companions/zog
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify immutable companion checkout pins
+        run: |
+          test "$(git -C root-control rev-parse HEAD)" = "d24714b0670441c0b5cf35fc5f19c4888d969565"
+          test "$(git -C companions/zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
+      - name: Install test dependencies
+        run: python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
+      - name: Compile both controller sources
+        run: python -m compileall -q box-control/src root-control/src
+      - name: Test certificate authority binding and managed storage privacy
+        run: |
+          python -m pytest -q \
+            box-control/tests/test_certify_policy_binding.py \
+            box-control/tests/test_host_bindings.py \
+            box-control/tests/test_execution_identity.py \
+            root-control/tests/test_certificate_policy_binding.py \
+            root-control/tests/test_private_persistent_storage.py
