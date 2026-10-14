@@ -74,6 +74,7 @@ class ApplicationSpec:
     storage_id: str | None = None  # Bound by controller, never caller declaration.
     execution_identity: str | None = None  # Symbolic 'application', not a caller-selected UID.
     execution_binding: dict | None = None  # Privileged immutable grant bound before preparation.
+    selected_program: str | None = None  # Controller-only single-command execution intent.
 
     def program(self, name: str) -> ProgramSpec:
         for program in self.programs:
