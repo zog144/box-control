@@ -29,11 +29,14 @@ def _render(program_names):
     ("issue", "renew"),
     ("renew", "inspect"),
 ])
-def test_multi_program_certificate_candidate_fails_before_launch(tmp_path, commands):
+def test_multi_program_certificate_declaration_remains_intact_until_explicit_selection(tmp_path, commands):
     path = tmp_path / "application.py"
     path.write_text(_render(commands))
-    with pytest.raises(ConfigurationError, match="exclusively selected runtime program"):
-        parse_application(path)
+    parsed = parse_application(path)
+    assert [p.name for p in parsed.programs] == list(commands)
+    assert parsed.selected_program is None
+    # The declaration alone grants no right to issue, renew or inspect.
+    # Admission must bind exactly one command and its original request ID.
 
 
 def test_single_explicit_certificate_command_parses_without_provisioning(tmp_path):
