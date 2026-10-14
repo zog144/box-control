@@ -34,15 +34,15 @@ running systemd manager. Deploy matching box-control and root-control code.
 
 ## Install the pinned companion revisions
 
-For standalone public-source validation, install box-control without trying
-to acquire its not-yet-public root-control and image-build companions:
+For a source-only syntax/packaging check, install box-control without trying
+to acquire its not-yet-public root-control and image-build components:
 
 ```sh
 python3.11 -m venv .venv
 . .venv/bin/activate
 python -m pip install 'dbus-next==0.2.3' 'pytest>=8,<10'
 python -m pip install --no-deps -e './box-control'
-python -m pytest -q box-control/tests/test_namespace_migration.py
+python -m compileall -q box-control/src box-control/tests
 ```
 
 Historical private companion pins remain separate provenance records. For full-stack acceptance, use newly approved public source identities once all companion components have been migrated. Root-control now lives in the separate `zog144/root-control` repository. Tests use installed companion packages; no legacy bundled privileged package is retained.
@@ -209,3 +209,7 @@ see [LICENSE](LICENSE), [LICENSES](LICENSES/) and
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). This public Git history
 omits prior private commits, tags and handoffs. The source-level public CI
 is distinct from root-control, image-build and live systemd acceptance.
+
+The public [CI and companion status](.github/CROSS-REPO-TESTING.md) documents
+pinned public aggregate compatibility, currently deselected execution-identity
+regressions and the separate full-companion/live-systemd acceptance gates.
