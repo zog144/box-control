@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: zog144/root-control
-          ref: d24714b0670441c0b5cf35fc5f19c4888d969565
+          ref: 11a458e7b8d02f18e8f2e8e20abf0d68f4142f56
           path: root-control
       - name: Check out known compatible public image-build source
         uses: actions/checkout@v4
@@ -39,7 +39,7 @@ jobs:
           python-version: "3.12"
       - name: Verify immutable companion checkout pins
         run: |
-          test "$(git -C root-control rev-parse HEAD)" = "d24714b0670441c0b5cf35fc5f19c4888d969565"
+          test "$(git -C root-control rev-parse HEAD)" = "11a458e7b8d02f18e8f2e8e20abf0d68f4142f56"
           test "$(git -C companions/zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
       - name: Install test dependencies
         run: python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
