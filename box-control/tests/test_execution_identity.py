@@ -1,4 +1,6 @@
 from dataclasses import asdict, replace
+from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
 from zog.box_control.application_storage import ApplicationStorage
@@ -53,14 +55,25 @@ def test_numeric_grant_applies_to_preparation_runtime_and_systemd(tmp_path):
     assert reconstructed.programs[0].user == "29001"
 
 
-def test_ready_storage_binds_original_numeric_identity_after_restart(tmp_path):
+def test_ready_storage_binds_original_numeric_identity_after_restart(tmp_path, monkeypatch):
     project = Project(tmp_path / "project")
     storage = ApplicationStorage(project)
     app = _application()
     grant = _grant(project)
     bound = ApplicationStorage.bind_execution(
         replace(app, storage_id="b" * 32), grant)
-    (project.mounts_dir / "persistent" / ("b" * 32) / "data").mkdir(parents=True)
+    directory = project.mounts_dir / "persistent" / ("b" * 32) / "data"
+    directory.mkdir(parents=True)
+    directory.chmod(0o700)
+    # Unit fixture has no privileged host grant: emulate exact kernel UID/GID
+    # while retaining real mount/path/mode checks in the public controller.
+    original_lstat = Path.lstat
+    def lstat(path, *args, **kwargs):
+        info = original_lstat(path, *args, **kwargs)
+        if Path(path) == directory:
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=grant["uid"], st_gid=grant["gid"])
+        return info
+    monkeypatch.setattr(Path, "lstat", lstat)
     storage.save(dict(schema=1, application=app.name, storage_id="b" * 32,
         state="ready", revision="1", signature=storage.signature(app),
         generation="generation", mounts=["data"],
@@ -110,3 +123,34 @@ def test_runtime_reference_preserves_grant_and_rejects_historical_mismatch(tmp_p
     legacy = RuntimeReferenceStore.encode({reference.runtime_id: replace(reference, execution_binding=None)})
     del legacy["runtimes"][reference.runtime_id]["execution_binding"]
     assert RuntimeReferenceStore.decode(legacy)[reference.runtime_id].execution_binding is None
+
+
+
+@pytest.mark.parametrize("drift", ["mode", "owner", "group"])
+def test_controller_refuses_managed_storage_dac_drift(tmp_path, monkeypatch, drift):
+    from zog.box_control.errors import RuntimeOperationError
+    project = Project(tmp_path / "project")
+    storage = ApplicationStorage(project)
+    app = _application()
+    grant = _grant(project)
+    bound = ApplicationStorage.bind_execution(replace(app, storage_id="b" * 32), grant)
+    directory = project.mounts_dir / "persistent" / ("b" * 32) / "data"
+    directory.mkdir(parents=True)
+    directory.chmod(0o755 if drift == "mode" else 0o700)
+    original_lstat = Path.lstat
+    def lstat(path, *args, **kwargs):
+        info = original_lstat(path, *args, **kwargs)
+        if Path(path) != directory:
+            return info
+        return SimpleNamespace(
+            st_mode=info.st_mode,
+            st_uid=grant["uid"] + (1 if drift == "owner" else 0),
+            st_gid=grant["gid"] + (1 if drift == "group" else 0),
+        )
+    monkeypatch.setattr(Path, "lstat", lstat)
+    storage.save(dict(schema=1, application=app.name, storage_id="b" * 32,
+        state="ready", revision="1", signature=storage.signature(app),
+        generation="generation", mounts=["data"],
+        definition=asdict(bound), cleanup_pending=False))
+    with pytest.raises(RuntimeOperationError, match="ownership or mode has drifted"):
+        storage.bind(app, "generation")
