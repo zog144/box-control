@@ -12,14 +12,22 @@ permissions:
 
 jobs:
   standalone:
-    name: Controller standalone tests (Python ${{ matrix.python-version }})
+    name: Controller with pinned public Zog companions (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/box-control/src:${{ github.workspace }}/companions/zog/src
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.13"]
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+      - name: Check out immutable public Zog aggregate for companions
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/zog
+          ref: d47d86b363824c718d9c165124cb55bbed12e0f9
+          path: companions/zog
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -31,13 +39,18 @@ jobs:
           test -f LICENSE
           test -f LICENSES/BSD-3-Clause.txt
           test -f LICENSES/GPL-3.0-only.txt
-      - name: Install standalone component and tooling
+      - name: Validate frozen aggregate dependency
+        run: |
+          test "$(git -C companions/zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
+          test -f companions/zog/src/zog/image_build/__init__.py
+          test -f companions/zog/src/zog/root_control/__init__.py
+      - name: Install component and tooling
         run: |
           python -m pip install 'dbus-next==0.2.3' 'pytest>=8,<10'
           python -m pip install --no-deps -e ./box-control
       - name: Compile source, tests and reviewed acceptance scripts
         run: python -m compileall -q box-control/src box-control/tests acceptance
-      - name: Run companion-independent controller tests
+      - name: Run public-aggregate compatibility tests
         run: |
           python -m pytest -q \
             box-control/tests/test_namespace_migration.py \
