@@ -8,6 +8,12 @@ on:
       - 'box-control/src/zog/box_control/host_bindings.py'
       - 'box-control/tests/test_certify_policy_binding.py'
       - 'box-control/tests/test_certify_application_profile.py'
+      - 'box-control/tests/test_selected_program_execution.py'
+      - 'box-control/src/zog/box_control/reconcile.py'
+      - 'box-control/src/zog/box_control/requests.py'
+      - 'box-control/src/zog/box_control/operations.py'
+      - 'box-control/src/zog/box_control/runtime/systemd.py'
+      - 'box-control/src/zog/box_control/model.py'
       - 'box-control/src/zog/box_control/specification.py'
       - 'box-control/tests/test_execution_identity.py'
       - '.github/workflows/certificate-controller-integration.yml'
@@ -28,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: zog144/root-control
-          ref: 11a458e7b8d02f18e8f2e8e20abf0d68f4142f56
+          ref: f7e880135b2fc30f53c5dce1380970879e9c1e26
           path: root-control
       - name: Check out known compatible public image-build source
         uses: actions/checkout@v4
@@ -41,7 +47,7 @@ jobs:
           python-version: "3.12"
       - name: Verify immutable companion checkout pins
         run: |
-          test "$(git -C root-control rev-parse HEAD)" = "11a458e7b8d02f18e8f2e8e20abf0d68f4142f56"
+          test "$(git -C root-control rev-parse HEAD)" = "f7e880135b2fc30f53c5dce1380970879e9c1e26"
           test "$(git -C companions/zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
       - name: Install test dependencies
         run: python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
@@ -60,7 +66,9 @@ jobs:
           python -m pytest -q \
             box-control/tests/test_certify_policy_binding.py \
             box-control/tests/test_certify_application_profile.py \
+            box-control/tests/test_selected_program_execution.py \
             box-control/tests/test_host_bindings.py \
             box-control/tests/test_execution_identity.py \
             root-control/tests/test_certificate_policy_binding.py \
-            root-control/tests/test_private_persistent_storage.py
+            root-control/tests/test_private_persistent_storage.py \
+            root-control/tests/test_selected_program_authority.py
