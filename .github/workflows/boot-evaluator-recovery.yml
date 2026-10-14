@@ -1,0 +1,54 @@
+name: Boot evaluator recovery regression
+
+on:
+  push:
+    branches: [unstable]
+    paths:
+      - 'box-control/src/zog/box_control/reconcile.py'
+      - 'box-control/src/zog/box_control/operations.py'
+      - 'box-control/src/zog/box_control/durability.py'
+      - 'box-control/src/zog/box_control/api.py'
+      - 'box-control/tests/test_reconcile_application_model.py'
+      - 'box-control/tests/test_durability.py'
+      - '.github/workflows/boot-evaluator-recovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}/companions/zog/src
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out pinned root-control
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/root-control
+          ref: 11a458e7b8d02f18e8f2e8e20abf0d68f4142f56
+          path: root-control
+      - name: Check out public aggregate dependency
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/zog
+          ref: d47d86b363824c718d9c165124cb55bbed12e0f9
+          path: companions/zog
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
+      - name: Overlay exact companion code into frozen aggregate namespace
+        run: |
+          cp -a box-control/src/zog/box_control/. companions/zog/src/zog/box_control/
+          cp -a root-control/src/zog/root_control/. companions/zog/src/zog/root_control/
+          python -m compileall -q companions/zog/src/zog/box_control companions/zog/src/zog/root_control
+      - name: Test evaluator ordering and interrupted-session recovery
+        run: |
+          python -m pytest -q \
+            box-control/tests/test_reconcile_application_model.py \
+            box-control/tests/test_durability.py \
+            box-control/tests/test_launch_cancellation.py
