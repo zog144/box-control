@@ -77,7 +77,8 @@ def mutation_guard(project):
     """
     project.require_state_allowed()
     marker = project.state_dir / "mutation-incomplete.json"
-    if project.path in _blocked_projects or marker.exists():
+    if (project.path in _blocked_projects or marker.exists()
+            or (project.state_dir / "session-recovery-pending.json").exists()):
         raise RecoveryRequired(f"project recovery required before mutation: {marker}")
     try:
         replace_json(marker, {"schema": 1, "status": "mutation-incomplete"})
