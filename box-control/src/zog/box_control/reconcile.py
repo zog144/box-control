@@ -308,6 +308,8 @@ class Reconciler:
         workspace_id=None,
         program_name=None,
     ):
+        if program_name is not None and request_id is None:
+            raise ConfigurationError('selected program requires a durable request ID')
         historical = self.operations.for_request(
             request_id, 'launch', application=application_name,
             selected_program=program_name,
@@ -385,6 +387,13 @@ class Reconciler:
             previous = references[runtime_id]
         except KeyError as exc:
             raise ConfigurationError(f"unknown application runtime: {runtime_id}") from exc
+        if previous.request_id and any(
+                record.get('selected_program') is not None
+                and record['request_id'] == previous.request_id
+                for record in self.operations.store.records()):
+            raise ConfigurationError(
+                'selected-program execution cannot be restarted; submit a new exact-program request'
+            )
         if self._is_stale_runtime(references, previous):
             raise ConfigurationError(
                 f"application runtime is no longer current for its instance: {runtime_id}"
@@ -563,6 +572,13 @@ class Reconciler:
                 continue
 
             prior = self.requests.result(request.request_id)
+            if prior is not None and (
+                    prior.program_name != request.program_name
+                    or prior.operation != request.operation
+                    or prior.workspace_id != request.workspace_id):
+                raise RecoveryRequired(
+                    'saved request result contradicts queued selected-program intent'
+                )
             if prior is not None and prior.status in {
                 ApplicationRequestStatus.SATISFIED,
                 ApplicationRequestStatus.FAILED,
