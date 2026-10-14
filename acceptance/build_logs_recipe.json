@@ -1,0 +1,1 @@
+{"command":["bash","acceptance/build_logs_host.sh"],"timeout_seconds":900,"outputs":["evidence"],"environment":{}}

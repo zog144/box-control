@@ -1,0 +1,1 @@
+{"command":["python3","acceptance/station_host.py"],"timeout_seconds":600,"outputs":["evidence"],"environment":{}}

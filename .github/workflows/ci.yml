@@ -1,0 +1,93 @@
+name: Public source validation
+
+on:
+  push:
+    branches: [main, unstable]
+  pull_request:
+    branches: [main, unstable]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  standalone:
+    name: Controller standalone tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Check public source boundary
+        run: |
+          test ! -e COPYRIGHT
+          test ! -e version-share-handoff.json
+          test ! -e .github/workflows/cross-repo-pytest.yml
+          test -f LICENSE
+          test -f LICENSES/BSD-3-Clause.txt
+          test -f LICENSES/GPL-3.0-only.txt
+      - name: Install standalone component and tooling
+        run: |
+          python -m pip install 'dbus-next==0.2.3' 'pytest>=8,<10'
+          python -m pip install --no-deps -e ./box-control
+      - name: Compile source, tests and reviewed acceptance scripts
+        run: python -m compileall -q box-control/src box-control/tests acceptance
+      - name: Run companion-independent controller tests
+        run: |
+          python -m pytest -q \
+            box-control/tests/test_namespace_migration.py \
+            box-control/tests/test_dependency.py \
+            box-control/tests/test_specification.py \
+            box-control/tests/test_generation.py \
+            box-control/tests/test_locking.py \
+            box-control/tests/test_durability.py \
+            box-control/tests/test_host_gateway.py \
+            box-control/tests/test_retention.py \
+            box-control/tests/test_launch_cancellation.py
+      - name: Check canonical import
+        run: python -c 'import zog.box_control as b; assert b.__version__ == "0.1.0"'
+
+  package-artifacts:
+    name: Wheel and source-distribution audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build nested Python project
+        run: |
+          python -m pip install build
+          python -m build ./box-control --outdir dist
+      - name: Inspect public package boundaries
+        run: |
+          python - <<'PY'
+          import glob, tarfile, zipfile
+          wheels=glob.glob('dist/*.whl')
+          sdists=glob.glob('dist/*.tar.gz')
+          assert len(wheels)==len(sdists)==1
+          with zipfile.ZipFile(wheels[0]) as archive:
+              files=set(archive.namelist())
+              assert 'zog/box_control/__init__.py' in files
+              assert 'zog/box_control/api.py' in files
+              assert 'zog/__init__.py' not in files
+              assert not any(x.startswith('zog/root_control/') for x in files)
+              assert any(x.endswith('/LICENSE') for x in files)
+              ep=next(x for x in files if x.endswith('.dist-info/entry_points.txt'))
+              assert 'box-control = zog.box_control.cli:main' in archive.read(ep).decode()
+          with tarfile.open(sdists[0], 'r:gz') as archive:
+              names=archive.getnames()
+              prefix=names[0].split('/',1)[0]
+              files={x[len(prefix)+1:] for x in names if x.startswith(prefix+'/')}
+              for path in ('LICENSE','LICENSES/BSD-3-Clause.txt',
+                           'LICENSES/GPL-3.0-only.txt','THIRD-PARTY-NOTICES.md',
+                           'README.md','src/zog/box_control/api.py'):
+                  assert path in files,path
+              assert 'COPYRIGHT' not in files
+              assert 'version-share-handoff.json' not in files
+          PY

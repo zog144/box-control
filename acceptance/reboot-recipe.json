@@ -1,0 +1,7 @@
+{
+  "preparation": {"command": ["python3", "acceptance/host_reboot_phase.py"], "timeout_seconds": 900},
+  "verification": {"command": ["python3", "acceptance/host_reboot_phase.py"], "timeout_seconds": 300},
+  "reboot_timeout_seconds": 600,
+  "outputs": ["evidence"],
+  "environment": {}
+}

@@ -1,0 +1,22 @@
+{
+  "schema": 2,
+  "program": "box-control",
+  "python_package": "zog.box_control",
+  "version": "0.1.0",
+  "scripts": {
+    "box-control": "zog.box_control.cli:main"
+  },
+  "component_dependencies": [
+    "image-build"
+  ],
+  "external_dependencies": [
+    "dbus-next==0.2.3"
+  ],
+  "package_data": [],
+  "license_notice_paths": [
+    "LICENSE",
+    "LICENSES/BSD-3-Clause.txt",
+    "LICENSES/GPL-3.0-only.txt",
+    "THIRD-PARTY-NOTICES.md"
+  ]
+}

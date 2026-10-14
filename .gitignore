@@ -1,0 +1,15 @@
+# Generated data is not public source
+*-validation.xml
+python-line-counts.json
+acceptance/evidence/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+*.pem
+*.key
+*.token
+github-token.txt

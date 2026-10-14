@@ -1,0 +1,175 @@
+Yes. The first implementation should cover both process termination and unexpected host reboot or power loss, assuming a supported local filesystem and storage that honors synchronization requests.
+
+Decision D1 — Failure scope: Cover both interruption classes. Physical media failure, backup recovery, and application writable-data durability remain outside this controller-state contract.
+
+The consequence is that atomic file replacement alone is insufficient: recovery-critical state must reach durable storage at defined points. Interruption tests should cover both partial operations and the loss of changes that were not yet synchronized.
+
+Next question: Should acknowledging a request as accepted guarantee that its identity and intent are durably recorded, so that after an interruption box-control can recover the same request without the caller submitting a new one?
+
+I recommend yes. Acceptance would guarantee durable responsibility for resolving the request; completion would be a separate outcome.
+
+Yes to the first and second questions.
+
+Agreed. D1 is confirmed: cover process termination and unexpected reboot or power loss, assuming a supported local filesystem and storage that honors synchronization requests.
+
+Decision D2 — Durable acceptance: Acknowledging a request as accepted guarantees that its identity and intent are durably recorded. Recovery must resolve that same request without requiring resubmission. Acceptance does not guarantee success.
+
+This means box-control must synchronize the acceptance record before acknowledging it; an interrupted accepted request remains its responsibility.
+
+Next question: Should reporting an operation as completed guarantee that its outcome and the controller state needed to recover that outcome are durable?
+
+I recommend yes. For example, after reporting a successful replacement, recovery must recognize that recorded result rather than perform the replacement again. This would preserve the result across reboot, without promising that the services themselves remain running.
+
+Yes to this next question.
+
+Decision D3 — Durable completion: Before reporting completion, box-control must durably record the outcome and the controller state needed to recover it.
+
+After interruption, recovery recognizes that outcome without repeating the operation. A successful launch result remains historical evidence; it does not promise that services are still running.
+
+Next question: If interruption leaves insufficient evidence to determine whether a replacement succeeded, should box-control raise a blocking recovery fault instead of automatically retrying?
+
+I recommend yes. Recovery may finish automatically when recorded identities and observed state establish what happened. When they cannot, it should preserve the evidence and protect affected runtime history and generations from cleanup until the uncertainty is resolved.
+
+Yes to this question.
+
+Decision D4 — Uncertain outcomes: When available evidence cannot establish what happened, box-control raises a blocking recovery fault. It preserves relevant evidence and protects affected runtime history and generations from cleanup.
+
+This prevents an uncertain replacement from being repeated automatically. Recovery can still proceed when the evidence establishes a safe next step.
+
+Next question: Before taking an external action, should box-control durably record the intended transition—including the request identity, old and new runtime identities, and relevant generation references?
+
+I recommend yes. This gives recovery a record of what was authorized and which resources must remain protected, even if interruption occurs immediately after the external action.
+
+Yes, that is good too.
+
+Decision D5 — Durable intent before action: Before an external action, box-control must durably record the intended transition, including the request identity, affected runtime identities, and generation references.
+
+Recovery can then identify the authorized work and protect its resources even when no result was recorded.
+
+Next question: If a caller retries using the same request ID and identical intent, should box-control return the existing request’s status or result without creating another attempt—and reject reuse of that ID with different intent?
+
+I recommend yes. This lets callers safely retry when an acknowledgement or completion response is lost.
+
+Yes, that is good strategy here, we agree that it should return the existing request's status.
+
+Decision D6 — Request retry identity: Reusing a request ID with identical intent returns its existing status or result without creating another attempt. Reusing it with different intent is rejected.
+
+A lost response therefore does not require a new operation.
+
+Next question: For this first implementation, should box-control retain completed request records indefinitely, independently of the 25-entry runtime-history limit?
+
+I recommend yes for this bounded pass. This preserves retry recognition after runtime history is pruned. A later retention policy can define when request IDs expire and how expired retries are rejected safely.
+
+Yes—indefinite retention would cause unbounded storage growth. My recommendation deferred a problem we should define now.
+
+An established approach is a documented retry window. For example, Stripe permits removing request keys after 24 hours; reusing a removed key then creates a new request. That is its explicit limit on duplicate prevention. Stripe documentation
+
+For Zog, I recommend:
+
+Unresolved requests: retain until resolved, including requests blocked by uncertain outcomes.
+Completed requests: retain their intent and compact result for a defined retry period, independently of runtime-history retention.
+Expired requests: reject further execution under that identity. The caller must inspect current state before deliberately issuing a new request.
+
+There is no general need to compare requests far into the past. We need enough history to handle delayed retries and lost responses; permanent audit history is a separate concern.
+
+There is one implementation constraint: after deleting an ordinary random request ID, we cannot distinguish it from an ID never seen before. Safe expiry therefore needs an identity scheme that carries an enforceable age or generation boundary. Keeping a permanent list of deleted IDs would merely recreate the storage problem.
+
+Indefinite retention remains unadopted; D6’s retry guarantee needs an explicit retention boundary.
+
+Next question: Do you agree that completed requests should have a bounded retry window, after which their identities are rejected rather than allowed to execute again?
+
+Yes, let's have an bounded window of 48 hours.
+
+Decision D7 — Bounded retry retention: Retain completed request records for 48 hours after durable completion. During that window, retries return the existing result. After expiry, reject execution under that request identity. Unresolved requests remain retained until resolved.
+
+This bounds completed-request storage without discarding work that still needs recovery.
+
+Next question: Should box-control issue request IDs before submission, so it can enforce their validity and eventual expiry?
+
+I recommend yes. A caller obtains an ID, then submits its intent using that ID. This gives box-control control over identity validity and lets it reject expired IDs even after their completed records have been deleted. Obtaining an ID alone would not constitute acceptance of work.
+
+Yes, let's do that.
+
+Decision D8 — Controller-issued request IDs: Box-control issues request IDs before submission and controls their validity. Issuing an ID does not accept work; acceptance occurs only after the submitted intent is durably recorded.
+
+The implementation must make expired IDs recognizable after their records are deleted. Controller issuance alone is not sufficient.
+
+Next question: Should an issued but unused ID expire 48 hours after issuance?
+
+I recommend yes. Once a request is accepted, it remains protected until resolved, and its completed result is retained for 48 hours after completion. The submission deadline would never cancel accepted work.
+
+Yes, let's use the same window.
+
+Decision D9 — Unused ID expiry: An issued but unused request ID expires 48 hours after issuance. Expiry does not cancel accepted work; completed results remain available for 48 hours after durable completion.
+
+Next question: Should recovery of previously accepted requests run before box-control accepts new lifecycle mutations?
+
+I recommend yes. Box-control first reconciles interrupted work with durable records and observed state. If uncertainty remains, the blocking recovery fault prevents new lifecycle mutations while inspection remains available. This gives the first implementation a clear recovery boundary under the existing project lock.
+
+Yes, that's good.
+
+Decision D10 — Recovery before new mutations: Under the project lock, box-control recovers previously accepted work before accepting new lifecycle mutations. Unresolved uncertainty blocks those mutations; inspection remains available.
+
+This prevents new operations from changing the evidence needed to recover interrupted work.
+
+Next question: When recovery proves that an accepted operation has only partially executed, should it automatically continue the remaining steps using the original request and runtime identities?
+
+I recommend yes, provided the recorded intent and observed state establish a safe next step. Already completed steps must not be repeated; ambiguous cases remain blocking faults under D4.
+
+Yes.
+
+Decision D11 — Resume proven partial work: Recovery automatically continues an accepted operation when durable intent and observed evidence establish a safe next step. It preserves the original request and runtime identities, skips proven completed steps, and blocks on ambiguity.
+
+Next question: If recovery finds that a required service definitively failed during an uncommitted launch, should it finish tearing down that attempt and record a failed result, leaving any new launch to a new request?
+
+I recommend yes. This preserves the existing launch transaction rule and prevents recovery from silently turning one accepted attempt into repeated launch attempts.
+
+Yes, do not launch again.
+
+Decision D12 — Failed attempts are not relaunched: When recovery establishes that a required service failed during an uncommitted launch, box-control records the failure and finishes tearing down that attempt. A new launch requires a new request.
+
+Cleanup remains separately tracked; incomplete cleanup continues to protect the affected resources.
+
+Next question: If the host reboots before launch success is durably recorded, and the available evidence cannot establish whether launch succeeded, should that remain a blocking uncertain outcome?
+
+I recommend yes. Record that the attempt was interrupted by reboot, preserve its evidence, and do not relaunch it automatically. Absence of services after reboot does not establish whether they executed beforehand.
+
+Yes, they do not need to relaunch on reboot.
+
+Decision D13 — Reboot does not retry an uncertain launch: If reboot interrupts a launch and success cannot be established, recovery preserves it as a blocking uncertain outcome and does not relaunch it.
+
+This concerns interrupted requests; it does not change the normal boot policies of previously committed applications.
+
+Next question: Should the first implementation provide an explicit operator action to resolve an uncertain attempt by abandoning it, cleaning up any remaining resources, and recording “abandoned; original outcome unknown”?
+
+I recommend yes. This provides a way to clear the recovery block without inventing a success or failure result. Launching again would require a separate new request.
+
+Accepted by user.
+
+Decision D14 — Explicit abandonment: An operator may resolve an uncertain attempt by abandoning it. Box-control durably records “abandoned; original outcome unknown” and tracks cleanup separately. Resource protection remains until cleanup is safely complete. A new launch requires a new request.
+
+This recovery action is permitted under the project lock despite the block on ordinary lifecycle mutations.
+
+Next question: Should a single durable operation record be authoritative for replacement progress and outcome, allowing recovery to repair runtime references and request results when interruption leaves those separate files out of date?
+
+I recommend yes. Record the replacement’s committed outcome before updating those dependent files. Recovery can then finish those updates without repeating the replacement; contradictions that cannot be explained by an interrupted update remain blocking faults.
+
+Yes, accepted by user.
+
+Decision D15 — Authoritative operation record: One durable operation record governs replacement progress and outcome. Runtime references and request results are derived from it; recovery repairs interrupted updates without repeating the replacement. Unexplained contradictions remain blocking faults.
+
+Next question: If writing or synchronizing recovery-critical state fails, should box-control stop further lifecycle actions and report a blocking persistence fault, without acknowledging acceptance or completion?
+
+I recommend yes. If an external action already occurred, its outcome may remain uncertain until recovery can establish and durably record it. Box-control must not assume that a failed write means the external action failed too.
+
+Yes, accepted by user.  
+
+If box-control cannot durably save recovery-critical state during an operation, should it suspend further lifecycle mutations for that project—including automatic rollback and reclamation—and report a blocking storage fault until persistence is restored and recovery establishes a safe next step?
+
+The implementation recommendation is yes for the first pass. Read-only inspection remains available, and existing services may continue running. Box-control must not acknowledge acceptance or completion whose required durable recording failed.
+
+Decision D16 — Blocking storage fault: Accepted, including your explicit scope. Failure to durably save recovery-critical state suspends further lifecycle mutations for the project, including automatic rollback and reclamation. Read-only inspection remains available, and existing services may continue running. Acceptance or completion must not be acknowledged when its required durable recording failed.
+
+Restoring persistence alone does not authorize further mutations: recovery must first establish a safe next step.
+
+This settles the immediate storage-failure policy. We have enough architectural direction to prepare the bounded implementation handoff and concrete interruption tests; no further question is needed now.
