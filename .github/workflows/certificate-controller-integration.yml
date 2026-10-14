@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      PYTHONPATH: ${{ github.workspace }}/box-control/src:${{ github.workspace }}/root-control/src:${{ github.workspace }}/companions/zog/src
+      PYTHONPATH: ${{ github.workspace }}/companions/zog/src
     steps:
       - uses: actions/checkout@v4
       - name: Check out exact root-control security companion
@@ -43,6 +43,14 @@ jobs:
           test "$(git -C companions/zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
       - name: Install test dependencies
         run: python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
+      - name: Overlay exact component source onto frozen namespace fixture
+        run: |
+          # The public aggregate currently contains a regular zog package and
+          # would otherwise shadow the separately checked-out namespace
+          # components. Overlay them in the disposable CI workspace only.
+          cp -a box-control/src/zog/box_control/. companions/zog/src/zog/box_control/
+          cp -a root-control/src/zog/root_control/. companions/zog/src/zog/root_control/
+          python -c 'import zog.box_control.host_bindings, zog.root_control.systemd'
       - name: Compile both controller sources
         run: python -m compileall -q box-control/src root-control/src
       - name: Test certificate authority binding and managed storage privacy
