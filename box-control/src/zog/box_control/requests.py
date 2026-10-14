@@ -43,6 +43,7 @@ class ApplicationRequest:
     runtime_id: str | None = None
     created_at: float = 0.0
     workspace_id: str | None = None
+    program_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class ApplicationRequestResult:
     error: str | None = None
     updated_at: float = 0.0
     workspace_id: str | None = None
+    program_name: str | None = None
 
 
 def _validate_request(request: ApplicationRequest) -> None:
@@ -64,6 +66,12 @@ def _validate_request(request: ApplicationRequest) -> None:
         raise ConfigurationError(
             "application request identity must contain only letters, digits, and hyphens"
         )
+    if request.program_name is not None and (
+            request.operation != ApplicationRequestOperation.LAUNCH
+            or not isinstance(request.program_name, str)
+            or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", request.program_name)
+            or request.workspace_id is not None):
+        raise ConfigurationError("selected program requires a valid non-workspace launch")
     if request.operation == ApplicationRequestOperation.LAUNCH:
         if not request.application or request.runtime_id is not None:
             raise ConfigurationError(
@@ -93,7 +101,9 @@ class ApplicationRequestStore:
                 if request.operation == ApplicationRequestOperation.LAUNCH
                 else prior.target_runtime_id == request.runtime_id
             )
-            if prior.operation == request.operation and same_target and prior.workspace_id == request.workspace_id:
+            if (prior.operation == request.operation and same_target
+                    and prior.workspace_id == request.workspace_id
+                    and prior.program_name == request.program_name):
                 return self.result_dir / f"{request.request_id}.json"
             raise RuntimeOperationError(
                 f"application request identity is already used: {request.request_id}"
@@ -105,6 +115,7 @@ class ApplicationRequestStore:
             "application": request.application,
             "runtime_id": request.runtime_id,
             "workspace_id": request.workspace_id,
+            "program_name": request.program_name,
             "created_at": request.created_at or time.time(),
         }
         if path.exists():
@@ -114,6 +125,7 @@ class ApplicationRequestStore:
                 and existing.application == request.application
                 and existing.runtime_id == request.runtime_id
                 and existing.workspace_id == request.workspace_id
+                and existing.program_name == request.program_name
             ):
                 return path
             raise RuntimeOperationError(
@@ -138,6 +150,7 @@ class ApplicationRequestStore:
                 application=(str(raw["application"]) if raw.get("application") else None),
                 runtime_id=(str(raw["runtime_id"]) if raw.get("runtime_id") else None),
                 workspace_id=raw.get("workspace_id"),
+                program_name=raw.get("program_name"),
                 created_at=float(raw.get("created_at", 0.0)),
             )
             if path.stem != request.request_id:
@@ -165,6 +178,7 @@ class ApplicationRequestStore:
                 replaced_runtime_id=raw.get("replaced_runtime_id"),
                 error=raw.get("error"),
                 workspace_id=raw.get("workspace_id"),
+                program_name=raw.get("program_name"),
                 updated_at=float(raw.get("updated_at", 0.0)),
             )
             if result.request_id != request_id:
