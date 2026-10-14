@@ -495,7 +495,7 @@ class Reconciler:
                     or ref.boot_id != boot_id
                     or ref.generation != selection.generation
                     or ref.state != ApplicationRuntimeState.RUNNING
-                    or ref.cleanup_pending or ref.error
+                    or ref.error
                     or ref.application_fingerprint != self._application_fingerprint(
                         closure, request.application)
                     or not ref.programs
