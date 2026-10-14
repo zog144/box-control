@@ -436,6 +436,80 @@ class Reconciler:
             error=error,
         )
 
+    def _queued_boot_launches(self, applications):
+        """Current queued boot launches suppress a redundant policy start.
+
+        Malformed requests remain the responsibility of _process_requests;
+        they must not change automatic policy decisions.
+        """
+        selected = set()
+        for path in self.requests.paths():
+            try:
+                request = self.requests.load(path)
+                if (request.operation != ApplicationRequestOperation.LAUNCH
+                        or request.workspace_id is not None
+                        or request.application not in applications):
+                    continue
+                spec = applications[request.application]
+                if (spec.multiple_instances or spec.start_policy not in {
+                        ApplicationStartPolicy.KEEP_RUNNING,
+                        ApplicationStartPolicy.START_ONCE_PER_BOOT}):
+                    continue
+                prior = self.requests.result(request.request_id)
+                if prior is None or prior.status == ApplicationRequestStatus.PENDING:
+                    selected.add(request.application)
+            except (ConfigurationError, RuntimeOperationError):
+                continue
+        return selected
+
+    def _prior_policy_launch(self, request, prior, *, applications, closure,
+                             references, selection, boot_id):
+        """Match a queued-before-launch request to a committed policy start.
+
+        A later explicit launch or a pending/uncertain request MUST NOT be
+        absorbed by this special boot ordering recovery case.
+        """
+        if prior is not None or request.workspace_id is not None:
+            return None
+        spec = applications.get(request.application)
+        if (spec is None or spec.multiple_instances
+                or spec.start_policy not in {
+                    ApplicationStartPolicy.KEEP_RUNNING,
+                    ApplicationStartPolicy.START_ONCE_PER_BOOT}):
+            return None
+        compatible = []
+        for operation in self.operations.store.records():
+            if (operation['operation'] != 'launch'
+                    or operation['request_id'] is not None
+                    or operation['phase'] != 'committed'
+                    or not operation['finished'] or not operation['published']
+                    or operation['boot_id'] != boot_id
+                    or operation['generation_root'] is None
+                    or operation['created_at'] < request.created_at
+                    or operation['stop_runtime_ids']
+                    or operation['application']['name'] != request.application):
+                continue
+            runtime_id = operation['new_runtime_id']
+            ref = references.get(runtime_id)
+            if (ref is None or ref.request_id is not None
+                    or ref.boot_id != boot_id
+                    or ref.generation != selection.generation
+                    or ref.state != ApplicationRuntimeState.RUNNING
+                    or ref.cleanup_pending or ref.error
+                    or ref.application_fingerprint != self._application_fingerprint(
+                        closure, request.application)
+                    or not ref.programs
+                    or any(p.active_state != 'active' for p in ref.programs)
+                    or self._is_stale_runtime(references, ref)):
+                continue
+            compatible.append(ref)
+        if len(compatible) != 1:
+            return None
+        live = self._live_references(references, application=request.application)
+        if len(live) != 1 or live[0].runtime_id != compatible[0].runtime_id:
+            return None
+        return compatible[0]
+
     def _process_requests(
         self,
         *,
@@ -470,19 +544,30 @@ class Reconciler:
 
             try:
                 if request.operation == ApplicationRequestOperation.LAUNCH:
-                    reference = self._launch_application_loaded(
-                        request.application or "",
-                        workspace_id=request.workspace_id,
-                        applications=applications,
-                        closure=closure,
-                        references=references,
-                        selection=selection,
+                    reference = self._prior_policy_launch(
+                        request, prior, applications=applications,
+                        closure=closure, references=references, selection=selection,
                         boot_id=boot_id,
-                        request_id=request.request_id,
-                        pending_replaced_runtime_id=(
-                            prior.replaced_runtime_id if prior is not None else None
-                        ),
                     )
+                    if reference is None:
+                        reference = self._launch_application_loaded(
+                            request.application or "",
+                            workspace_id=request.workspace_id,
+                            applications=applications,
+                            closure=closure,
+                            references=references,
+                            selection=selection,
+                            boot_id=boot_id,
+                            request_id=request.request_id,
+                            pending_replaced_runtime_id=(
+                                prior.replaced_runtime_id if prior is not None else None
+                            ),
+                        )
+                    else:
+                        report.messages.append(
+                            f"application request {request.request_id}: "
+                            f"matched committed boot-policy runtime {reference.runtime_id}"
+                        )
                 elif request.operation == ApplicationRequestOperation.RESTART:
                     reference = self._restart_application_runtime_loaded(
                         request.runtime_id or "",
@@ -575,6 +660,7 @@ class Reconciler:
                 + f" rootfs generation {selection.generation[:16]}"
             )
 
+            queued_boot_launches = self._queued_boot_launches(applications)
             for name in closure.applications:
                 spec = applications[name]
                 live = self._live_references(references, application=name)
@@ -584,6 +670,13 @@ class Reconciler:
                 elif spec.start_policy == ApplicationStartPolicy.START_ONCE_PER_BOOT:
                     should_start = not live and not self._started_during_boot(
                         references, name, boot_id
+                    )
+
+                if should_start and name in queued_boot_launches:
+                    should_start = False
+                    report.messages.append(
+                        f"{name}: queued explicit boot launch takes precedence over "
+                        "automatic policy start"
                     )
 
                 if should_start:
