@@ -156,6 +156,11 @@ def inspect_recovery(project):
                 guidance = 'evaluate-for-recovery' if matching or preparing else 'manual-investigation'
                 problem('mutation-incomplete', 'An interrupted mutation is recorded.', marker_path,
                         operation_id=identity if isinstance(identity, str) else None, guidance=guidance)
+        pending_recovery = project.state_dir / 'session-recovery-pending.json'
+        if pending_recovery.exists() or pending_recovery.is_symlink():
+            problem('session-recovery-incomplete',
+                    'A reviewed session recovery audit has not finished its durability barriers.',
+                    pending_recovery, guidance='explicitly-resume-reviewed-session-recovery')
         if project.path in _blocked_projects:
             problem('storage-interlock', 'This process retains a storage failure interlock.', project.state_dir,
                     guidance='restore-storage-then-evaluate')
