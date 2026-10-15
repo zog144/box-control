@@ -17,7 +17,7 @@ from zog.box_control.requests import (
 
 def app():
     programs = tuple(ProgramSpec(name=name, command=("/bin/echo", name))
-                     for name in ("issue", "renew", "inspect"))
+                     for name in ("issue", "renew", "inspect", "stage"))
     return ApplicationSpec(
         name="certify-manage", programs=programs,
         persistent=True, execution_identity="application",
@@ -59,7 +59,7 @@ def test_request_selector_is_durable_and_cannot_be_reused_for_another_program(tm
         store.submit(replace(request, program_name="inspect"))
 
 
-@pytest.mark.parametrize("chosen", ["issue", "renew", "inspect"])
+@pytest.mark.parametrize("chosen", ["issue", "renew", "inspect", "stage"])
 def test_bound_single_program_keeps_original_storage_and_grant(tmp_path, monkeypatch, chosen):
     from zog.box_control.application_storage import ApplicationStorage
     from zog.box_control import application_software
