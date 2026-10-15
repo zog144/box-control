@@ -27,7 +27,7 @@ _ALLOWED_SOURCE_ROOTS = ("/run/zog-host-export/", "/var/lib/zog-host-export/")
 _CERT_POLICY_SOURCE = "/etc/zog/certify-policy"
 _CERT_POLICY_CAPABILITY = "certify-policy"
 _CERT_APPLICATION = "certify-manage"
-_CERT_PROGRAMS = frozenset({"prepare", "issue", "renew", "inspect"})
+_CERT_PROGRAMS = frozenset({"prepare", "issue", "renew", "inspect", "stage"})
 _MAX_CERT_POLICY_BYTES = 65536
 
 
