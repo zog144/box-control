@@ -70,7 +70,7 @@ class IssuerObserver:
         self.authorized_uid = authorized_uid
 
     def handle(self, request):
-        from .role_broker import _APPLICATION as REQUEST
+        from .role_broker import _REQUEST as REQUEST
         if (not isinstance(request, dict)
                 or set(request) != {"schema", "operation", "request_id"}
                 or request.get("schema") != SCHEMA

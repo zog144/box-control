@@ -108,3 +108,15 @@ def test_peer_authenticated_receives_only_sanitized_secret_free_data(monkeypatch
         assert payload["result"]["tls_ready"] is False
     finally:
         sender.close()
+
+
+def test_issuer_observer_accepts_exact_long_signed_request_id():
+    """The observer must not use the application-name (64 char) pattern."""
+    request_id = "r1-19a5d-" + "a" * 32 + "-" + "b" * 64
+    called = []
+    observer = IssuerObserver(SimpleNamespace(observe_issuer_request=lambda rid:
+        called.append(rid) or sample(rid)), authorized_uid=9901)
+    assert observer.handle({
+        "schema": SCHEMA, "operation": "observe-issuer", "request_id": request_id,
+    }) == sample(request_id)
+    assert called == [request_id]
