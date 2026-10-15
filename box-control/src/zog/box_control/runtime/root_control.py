@@ -41,6 +41,12 @@ class RootControlSystemdTransport:
                 project_root=str(project_root), runtime_id=runtime_id, limit=limit,
             )
 
+    def issuer_observe(self, *, project_root, request_id):
+        with self.operation_budget(10):
+            return self._request(
+                "issuer_observe", project_root=str(project_root), request_id=request_id,
+            )
+
     def application_runtime_mounts(self, *, project_root, runtime_id):
         with self.operation_budget(10):
             return self._request(
