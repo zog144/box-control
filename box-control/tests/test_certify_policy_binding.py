@@ -41,7 +41,7 @@ def _root_owned_file(monkeypatch):
     monkeypatch.setattr(host_bindings.os, "fstat", fstat)
 
 
-@pytest.mark.parametrize("name", ["prepare", "issue", "renew", "inspect"])
+@pytest.mark.parametrize("name", ["prepare", "issue", "renew", "inspect", "stage"])
 def test_certify_program_gets_exact_root_owned_read_only_policy(tmp_path, monkeypatch, name):
     project, directory, _policy, _entry = fixture(tmp_path, monkeypatch, program=name)
     _root_owned_file(monkeypatch)
@@ -59,7 +59,7 @@ def test_certify_program_gets_exact_root_owned_read_only_policy(tmp_path, monkey
 def test_missing_admin_grant_blocks_all_certificate_commands(tmp_path, monkeypatch):
     project = Project(tmp_path / "project")
     monkeypatch.setattr(host_bindings, "POLICY_PATH", tmp_path / "absent")
-    for program in ("prepare", "issue", "renew", "inspect"):
+    for program in ("prepare", "issue", "renew", "inspect", "stage"):
         with pytest.raises(RuntimeOperationError, match="binding is absent"):
             host_bindings.resolve(project.path, "certify-manage", program)
 
