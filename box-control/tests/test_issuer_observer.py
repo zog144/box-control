@@ -80,7 +80,10 @@ def test_peer_unauthorized_cannot_read_private_issuer_data(monkeypatch):
         }, 4096))
         respond_one(observer, receiver)
         sender.settimeout(1)
-        assert sender.recv(1) == b""
+        try:
+            assert sender.recv(1) == b""
+        except ConnectionResetError:
+            pass  # Unauthenticated input may cause Unix stream reset on close.
     finally:
         sender.close()
 
