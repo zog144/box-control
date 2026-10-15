@@ -58,7 +58,7 @@ is allowed over this socket:
 
 ```json
 {
-  "schema": 1,
+  "schema": "zog-application-role-broker-v1",
   "operation": "observe-issuer",
   "request_id": "EXACT-SAVED-REQUEST"
 }
