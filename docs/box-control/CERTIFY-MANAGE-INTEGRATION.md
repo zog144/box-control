@@ -75,10 +75,12 @@ A representative binding for the renewal operation is:
 ```
 
 Under schema 1, this is one entry in `bindings`. A matching
-`prepare` entry is separately required for preparation. Other
-allowed program names in this *reserved* scope are `issue` and
-`inspect`, for a future independently authorized operation
-interface. **No other application or program may borrow this
+`prepare` entry is separately required for preparation. Other approved program names in this *reserved* scope are `issue`,
+`inspect`, and separately selected `stage`. Every program requires its
+own explicit administrator grant; stage never authorizes publication,
+key export, or a consumer reload. See
+[CERTIFY-ISSUER-OBSERVATION.md](CERTIFY-ISSUER-OBSERVATION.md) for the
+read-only issuer evidence transport and stage gate. **No other application or program may borrow this
 capability or bind the same path under another name.** No alternate
 source path, additional cert application capability or writable bind
 is permitted.
