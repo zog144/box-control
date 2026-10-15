@@ -454,6 +454,16 @@ class BoxControl:
             request_id=request_id,
         )
 
+    def observe_issuer_request(self, request_id: str):
+        """Trust-rooted, read-only certificate issuer evidence for one saved request.
+
+        The privileged reader derives storage, UID, policy and operation
+        identities from durable controller records, not caller-supplied JSON.
+        """
+        return self.systemd_transport.issuer_observe(
+            project_root=self.project.path, request_id=request_id,
+        )
+
     def application_request_result(self, request_id: str):
         return self._request_store().result(request_id)
 
