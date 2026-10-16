@@ -26,3 +26,11 @@ test source and are explicitly deselected by this interim compatibility CI:
 They are **outstanding product gates**, not passes or waived requirements.
 Their actual implementation and independent revalidation belong to the
 box-control execution-identity owner before expanding public CI.
+
+## 2026-10-16: candidate security gate (current component sources)
+
+The four symbolic execution-identity cases formerly deselected by the **historical aggregate compatibility** suite are now *executed without deselection* in the distinct candidate **controller-security-regression** job. Its ordinary PR smoke run [38970885412](https://github.com/zog144/box-control/actions/runs/38970885412) passed 468 tests with zero skipped/deselected. The four cases were explicitly checked in the report. The intentionally failing negative-control PR run [38971013118](https://github.com/zog144/box-control/actions/runs/38971013118) correctly failed (1 failed, 468 passed). Both PRs were closed and not merged.
+
+This source gate pins root-control **ba7d0e4afc18493a34d2fd9a05a661b2ca5ad8cd** and historical public Zog aggregate **d47d86b363824c718d9c165124cb55bbed12e0f9**. The historical image-build fixture is **not an approved current image-build release**. The previous exclusions remain visible in public-aggregate-compatibility for historical coverage; they are no longer absent from the candidate security lane. Required branch-protection status-check installation is an **administrator step** and is not accomplished by committing workflow YAML.
+
+Live systemd, socket UID/DAC, real kernel mount, reboot, PAM/seat and root-identity acceptance remain independent disposable-host gates. Cross-repository source checkout verification does not certify a native deployment.
