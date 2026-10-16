@@ -89,7 +89,7 @@ def test_unavailable_or_conflicting_build_evidence_is_not_success():
 
 
 @pytest.mark.parametrize("state,outcome,expected", [
-    ("running", None, "running"),
+    ("running", None, "unknown"),
     ("unknown", "unknown", "uncertain"),
     ("cleanup", "success", "uncertain"),
     ("completed", "cancelled", "cancelled"),
