@@ -13,7 +13,7 @@ import re
 import socket
 import struct
 
-from .application_progress import SCHEMA, _HEX, _RUNTIME
+from .application_progress import SCHEMA, _HEX, _RUNTIME, _TOKEN, _APPLICATION, _VIEW, _BOOT
 from .application_progress_broker import WIRE
 from .role_broker import _json_bytes, _peer_uid, _read_exact, _unique_pairs
 
@@ -77,7 +77,10 @@ class ApplicationProgressClient:
                 or type(value["snapshot_id"]) is not str
                 or not _HEX.fullmatch(value["snapshot_id"])
                 or type(value["items"]) is not list
-                or len(value["items"]) > 2 * limit):
+                or len(value["items"]) > 2 * limit
+                or (value["boot_id"] is not None and
+                    (type(value["boot_id"]) is not str or
+                     not _BOOT.fullmatch(value["boot_id"])))):
             raise ProgressClientError("untrusted-progress-envelope")
         try:
             observed = datetime.fromisoformat(value["observed_at"])
@@ -115,6 +118,33 @@ class ApplicationProgressClient:
                     or type(item["operation_id"]) is not str
                     or len(item["operation_id"]) > 128):
                 raise ProgressClientError("invalid-progress-item")
+            build_id = item["build_job_id"]
+            runtime_id = item["runtime_id"]
+            token = item["controller_request_id"]
+            if token is not None and (type(token) is not str or
+                                      not _TOKEN.fullmatch(token)):
+                raise ProgressClientError("invalid-progress-request-id")
+            if build_id is not None:
+                if (type(build_id) is not str or not _HEX.fullmatch(build_id)
+                        or runtime_id is not None or item["application"] is not None
+                        or item["selected_software_id"] is not None
+                        or item["operation_id"] != "build:" + build_id
+                        or item["evidence_ref"] != "build-job:" + build_id
+                        or item["phase"] not in {"queued", "building"}
+                        or not item["message_code"].startswith("build-")):
+                    raise ProgressClientError("invalid-build-progress-identity")
+            else:
+                name = item["application"]
+                view = item["selected_software_id"]
+                if (type(runtime_id) is not str or not _RUNTIME.fullmatch(runtime_id)
+                        or type(name) is not str or not _APPLICATION.fullmatch(name)
+                        or view is not None and (
+                            type(view) is not str or not _VIEW.fullmatch(view))
+                        or item["operation_id"] != "runtime:" + runtime_id
+                        or item["evidence_ref"] != "runtime:" + runtime_id
+                        or item["phase"] != "launching"
+                        or not item["message_code"].startswith("runtime-")):
+                    raise ProgressClientError("invalid-runtime-progress-identity")
         page = value["page"]
         if (type(page) is not dict or
                 set(page) != {"build_has_more", "runtime_has_more",
