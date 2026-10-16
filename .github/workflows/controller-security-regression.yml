@@ -1,0 +1,125 @@
+name: Controller security regression
+
+on:
+  pull_request:
+    branches: [main, unstable]
+  push:
+    branches: [main, unstable]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  controller-security-regression:
+    name: controller-security-regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONPATH: ${{ github.workspace }}/box-control/src:${{ github.workspace }}/root-control/src:${{ github.workspace }}/.ci-deps
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout approved exact root-control source
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/root-control
+          ref: ba7d0e4afc18493a34d2fd9a05a661b2ca5ad8cd
+          path: root-control
+          persist-credentials: false
+      - name: Checkout historical public image-build fixture (not current release)
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/zog
+          ref: d47d86b363824c718d9c165124cb55bbed12e0f9
+          path: historical-zog
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify exact immutable source identities
+        run: |
+          set -euo pipefail
+          test "$(git -C root-control rev-parse HEAD)" = "ba7d0e4afc18493a34d2fd9a05a661b2ca5ad8cd"
+          test "$(git -C historical-zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
+          test -f root-control/src/zog/root_control/daemon.py
+          test -f box-control/src/zog/box_control/specification.py
+          test -f historical-zog/src/zog/image_build/__init__.py
+          {
+            echo "## Controller security source identities"
+            echo "- Candidate box-control checkout: $(git rev-parse HEAD)"
+            echo "- Candidate commit reported by GitHub: ${GITHUB_SHA}"
+            echo "- Exact root-control companion: $(git -C root-control rev-parse HEAD)"
+            echo "- Image-build: not approved as current; historical zog fixture d47d86b363824c718d9c165124cb55bbed12e0f9"
+            echo "- Source CI: no native systemd/mount/socket ownership/PAM/reboot assertion"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Build isolated historical dependency namespace
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          src = Path("historical-zog/src/zog").resolve()
+          dst = Path(".ci-deps/zog")
+          dst.mkdir(parents=True, exist_ok=True)
+          for p in src.iterdir():
+              if p.name in {"__init__.py", "__pycache__", "box_control", "root_control"}:
+                  continue
+              if p.is_dir() or (p.is_file() and p.suffix == ".py"):
+                  (dst / p.name).symlink_to(p)
+          assert not (dst / "__init__.py").exists()
+          assert not (dst / "box_control").exists()
+          assert not (dst / "root_control").exists()
+          PY
+      - name: Install and independently verify current packages
+        run: |
+          python -m pip install 'dbus-next==0.2.3' 'pytest>=8,<10'
+          python -m pip install --no-deps -e ./box-control -e ./root-control
+          python -m compileall -q box-control/src box-control/tests root-control/src root-control/tests
+          python - <<'PY'
+          from pathlib import Path
+          import zog.box_control, zog.root_control, zog.image_build
+          root = Path.cwd()
+          assert Path(zog.box_control.__file__).resolve().is_relative_to(root / "box-control/src")
+          assert Path(zog.root_control.__file__).resolve().is_relative_to(root / "root-control/src")
+          assert Path(zog.image_build.__file__).resolve().is_relative_to(root / "historical-zog/src")
+          print("current controller/privileged packages and explicitly historical image fixture imported")
+          PY
+      - name: Test controller and privileged security without deselections
+        run: |
+          set -euo pipefail
+          python -m pytest --strict-markers -q -ra             --junitxml=security-results.xml             box-control/tests/test_specification.py             box-control/tests/test_execution_identity.py             box-control/tests/test_application_storage.py             box-control/tests/test_host_bindings.py             box-control/tests/test_certify_policy_binding.py             box-control/tests/test_issuer_lifecycle_broker.py             box-control/tests/test_issuer_observer.py             box-control/tests/test_selected_program_execution.py             box-control/tests/test_selected_program_recovery.py             box-control/tests/test_durability.py             box-control/tests/test_reboot_recovery.py             box-control/tests/test_launch_cancellation.py             box-control/tests/test_preflight.py             box-control/tests/test_build_jobs.py             box-control/tests/test_role_broker.py             box-control/tests/test_application_progress.py             root-control/tests/test_selected_program_authority.py             root-control/tests/test_execution_identities.py             root-control/tests/test_private_persistent_storage.py             root-control/tests/test_daemon_socket_access.py             root-control/tests/test_daemon_admission.py             root-control/tests/test_root_control_systemd.py             root-control/tests/test_issuer_credentials.py             root-control/tests/test_issuer_observation.py             root-control/tests/test_certificate_policy_binding.py             root-control/tests/test_runtime_credentials.py             root-control/tests/test_journal_attribution.py             root-control/tests/test_mounts.py             | tee security-pytest.txt
+      - name: Report source selection and require four symbolic identity cases
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          target = Path("security-results.xml")
+          with open(__import__("os").environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("\n## Exact security pytest selection\n")
+              summary.write("See the Test step (27 explicitly named test modules, no `--deselect` or exclusion selector).\n")
+              if not target.exists():
+                  summary.write("No results XML: suite failed before test report generation.\n")
+                  raise SystemExit(1)
+              tree = ET.parse(target)
+              suites = list(tree.iter("testsuite"))
+              cases = list(tree.iter("testcase"))
+              tests = len(cases)
+              failures = sum(int(s.attrib.get("failures", 0)) for s in suites)
+              errors = sum(int(s.attrib.get("errors", 0)) for s in suites)
+              skipped = sum(1 for c in cases if c.find("skipped") is not None)
+              summary.write(f"Tests: {tests}; failed: {failures}; errors: {errors}; skipped: {skipped}; deselected: 0.\n")
+              checks = (
+                  "test_symbolic_persistent_execution_identity_requires_no_explicit_user",
+                  "test_symbolic_grant_rejects_caller_chosen_credentials",
+                  "test_symbolic_identity_rejects_nonpersistent_or_multi_instance",
+              )
+              hits = {name: [c for c in cases if name in c.get("name", "")]
+                      for name in checks}
+              summary.write("Identity test cases: " + ", ".join(
+                  name + "=" + str(len(items)) for name, items in hits.items()) + ".\n")
+              summary.write("Native systemd identity/socket DAC/real mount/reboot: NOT TESTED by this job.\n")
+              if [len(hits[x]) for x in checks] != [1, 2, 1] or skipped or failures or errors:
+                  raise SystemExit("security gate: missing/failed/deselected/skip cases")
+          PY
