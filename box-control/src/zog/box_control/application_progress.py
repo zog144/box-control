@@ -76,7 +76,9 @@ def _build_job(control, summary, now):
         if state == "prepared":
             status, code = "waiting", "build-awaiting-start"
         elif state in ("starting", "running") and outcome is None:
-            status, code = "running", "build-job-running"
+            # A persisted job state is not a fresh kernel observation.
+            # After a lost response or reboot it may no longer be running.
+            status, code = "unknown", "build-state-unobserved"
         elif state == "completed" and record.get("process_cleanup_complete") is True:
             if outcome == "success":
                 status, code = "succeeded", "build-command-succeeded"
