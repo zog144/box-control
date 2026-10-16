@@ -103,7 +103,7 @@ class ApplicationProgressClient:
         codes = {"build-awaiting-start", "build-job-running",
                  "build-command-succeeded", "build-command-cancelled",
                  "build-command-failed", "build-outcome-uncertain",
-                 "build-state-unrecognized", "build-evidence-unavailable",
+                 "build-state-unrecognized", "build-state-unobserved", "build-evidence-unavailable",
                  "runtime-observation-unavailable", "runtime-observed-active",
                  "runtime-terminated-successfully", "runtime-terminal-unverified",
                  "runtime-failed", "runtime-cleanup-or-state-uncertain"}
