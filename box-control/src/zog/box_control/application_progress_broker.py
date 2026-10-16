@@ -80,6 +80,7 @@ def main(argv=None):
     # Systemd's unit and the root-owned socket configuration pin both UIDs,
     # project and optional privileged read-only observation transport.
     project = Project(path)
+    project.require_state_allowed()
     transport = None
     if args.root_control_socket:
         from .runtime.root_control import RootControlSystemdTransport
