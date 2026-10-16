@@ -190,3 +190,66 @@ def test_right_peer_receives_only_bounded_redacted_snapshot(monkeypatch):
         assert b"DO-NOT-EXPOSE" not in body
     finally:
         client.close()
+
+
+def test_consumer_requires_matching_controller_peer_and_sanitized_page(monkeypatch):
+    from zog.box_control.application_progress_client import (
+        ApplicationProgressClient, ProgressClientError,
+    )
+    client = ApplicationProgressClient(
+        "/run/zog/application-progress.sock", controller_uid=9902,
+    )
+    source = Source()
+    page = observe_application_progress(source, limit=1)
+    monkeypatch.setattr(client, "_request", lambda _frame: page)
+    assert client.snapshot(limit=1)["items"] == page["items"]
+    for modify in (
+        lambda p: p.update(boot_id="../secrets"),
+        lambda p: p["items"][0].update(evidence_ref="/home/private"),
+        lambda p: p["items"][1].update(application="<script>"),
+        lambda p: p["items"][0].update(state="published"),
+        lambda p: p.update(snapshot_id="../forged"),
+        lambda p: p["items"][1].update(selected_software_id="/usr/bin/python"),
+    ):
+        import copy
+        broken = copy.deepcopy(page)
+        modify(broken)
+        monkeypatch.setattr(client, "_request", lambda _frame, v=broken: v)
+        with pytest.raises(ProgressClientError):
+            client.snapshot(limit=1)
+
+
+def test_consumer_rejects_incorrect_login_capability(monkeypatch):
+    from zog.box_control.application_progress_client import (
+        ApplicationProgressClient, ProgressClientError,
+    )
+    client = ApplicationProgressClient(
+        "/run/zog/application-progress.sock", controller_uid=9902,
+    )
+    monkeypatch.setattr(client, "_request", lambda _frame: local_session_capabilities())
+    assert client.local_session()["supported"] is False
+    monkeypatch.setattr(client, "_request", lambda _frame: {
+        **local_session_capabilities(), "supported": True,
+    })
+    with pytest.raises(ProgressClientError):
+        client.local_session()
+
+
+def test_consumer_rejects_wrong_server_uid_before_receiving_reply(monkeypatch):
+    from zog.box_control import application_progress_client as module
+    from zog.box_control.application_progress_client import (
+        ApplicationProgressClient, ProgressClientError,
+    )
+    monkeypatch.setattr(module, "_peer_uid", lambda _sock: 9000)
+    class FakeSocket:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def settimeout(self, value): pass
+        def connect(self, path): pass
+        def sendall(self, data): pytest.fail("untrusted peer must not receive request")
+    monkeypatch.setattr(module.socket, "socket", lambda *_args: FakeSocket())
+    client = ApplicationProgressClient(
+        "/run/zog/application-progress.sock", controller_uid=9902,
+    )
+    with pytest.raises(ProgressClientError, match="peer-identity"):
+        client.snapshot()
