@@ -147,3 +147,8 @@ def test_symbolic_identity_rejects_nonpersistent_or_multi_instance(tmp_path):
                         + extra + ', programs=(program(name="web"),))')
         with pytest.raises(ConfigurationError, match="persistent singleton"):
             parse_application(path)
+
+
+def test_security_regression_negative_control_must_fail():
+    """Deliberately failing scratch-PR fixture; NEVER merge to unstable."""
+    assert False, "negative control confirms security job blocks a failing test"
