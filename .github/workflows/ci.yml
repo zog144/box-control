@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  standalone:
-    name: Controller with pinned public Zog companions (Python ${{ matrix.python-version }})
+  public-aggregate-compatibility:
+    name: public-aggregate-compatibility (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: ${{ github.workspace }}/box-control/src:${{ github.workspace }}/companions/zog/src
