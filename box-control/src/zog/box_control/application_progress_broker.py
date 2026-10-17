@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import os
+import stat
 from pathlib import Path
 from threading import BoundedSemaphore
 
@@ -21,6 +22,7 @@ from .role_broker import (
 )
 
 WIRE = "zog-application-progress-rpc-v1"
+CONSOLE_SOCKET = Path("/run/host-welcome/controller-progress.sock")
 
 
 class ApplicationProgressBroker:
@@ -65,11 +67,37 @@ def respond_one(broker, conn):
         conn.sendall(data)
 
 
+def verify_host_welcome_listener(listener, consumer_uid):
+    """Constrain a console observer to the separately installed socket.
+
+    This does not install a socket or authorize a client: host-install pins the
+    root-owned unit, the broker's controller UID, and the consumer's grant.
+    """
+    if type(consumer_uid) is not int or not 1 <= consumer_uid < 2**31:
+        raise RoleBrokerError("invalid host-welcome consumer UID")
+    if listener.getsockname() != str(CONSOLE_SOCKET):
+        raise RoleBrokerError("wrong host-welcome listener")
+    parent = Path("/")
+    for part in CONSOLE_SOCKET.parent.parts[1:]:
+        parent /= part
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or stat.S_IMODE(info.st_mode) & 0o022):
+            raise RoleBrokerError("untrusted console listener ancestry")
+    info = CONSOLE_SOCKET.lstat()
+    if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != consumer_uid
+            or stat.S_IMODE(info.st_mode) != 0o600):
+        raise RoleBrokerError("untrusted console listener ownership")
+    # Directory protection prevents a non-root path swap after inspection.
+    # SO_PEERCRED still enforces the caller UID separately for each request.
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Read-only Zog controller progress")
     parser.add_argument("--project", required=True)
     parser.add_argument("--authorized-uid", required=True, type=int)
     parser.add_argument("--root-control-socket")
+    parser.add_argument("--observer-role", choices=("station", "host-welcome"), default="station")
     args = parser.parse_args(argv)
     if os.geteuid() == 0 or os.geteuid() == args.authorized_uid:
         raise RoleBrokerError("distinct nonroot controller owner required")
@@ -97,18 +125,24 @@ def main(argv=None):
         finally:
             slots.release()
 
-    with _activated_socket() as listener, ThreadPoolExecutor(max_workers=2) as pool:
-        while True:
-            conn, _ = listener.accept()
-            if not slots.acquire(blocking=False):
-                conn.close()
-                continue
-            try:
-                pool.submit(worker, conn)
-            except BaseException:
-                conn.close()
-                slots.release()
-                raise
+    with _activated_socket() as listener:
+        if args.observer_role == "host-welcome":
+            if (args.root_control_socket != "/run/zog/root-control.sock"
+                    or args.authorized_uid == os.geteuid()):
+                raise RoleBrokerError("unapproved console progress authority")
+            verify_host_welcome_listener(listener, args.authorized_uid)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            while True:
+                conn, _ = listener.accept()
+                if not slots.acquire(blocking=False):
+                    conn.close()
+                    continue
+                try:
+                    pool.submit(worker, conn)
+                except BaseException:
+                    conn.close()
+                    slots.release()
+                    raise
 
 
 if __name__ == "__main__":
