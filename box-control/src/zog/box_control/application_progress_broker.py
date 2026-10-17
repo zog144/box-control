@@ -126,6 +126,9 @@ def main(argv=None):
             slots.release()
 
     with _activated_socket() as listener:
+        if (args.observer_role != "host-welcome"
+                and listener.getsockname() == str(CONSOLE_SOCKET)):
+            raise RoleBrokerError("dedicated console listener requires host-welcome role")
         if args.observer_role == "host-welcome":
             if (args.root_control_socket != "/run/zog/root-control.sock"
                     or args.authorized_uid == os.geteuid()):
