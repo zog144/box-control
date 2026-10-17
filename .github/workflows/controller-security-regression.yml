@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: zog144/root-control
-          ref: ba7d0e4afc18493a34d2fd9a05a661b2ca5ad8cd
+          ref: 9ce075d50c6007a4266a38a36024de3df3c051a4
           path: root-control
           persist-credentials: false
       - name: Checkout historical public image-build fixture (not current release)
@@ -41,7 +41,7 @@ jobs:
       - name: Verify exact immutable source identities
         run: |
           set -euo pipefail
-          test "$(git -C root-control rev-parse HEAD)" = "ba7d0e4afc18493a34d2fd9a05a661b2ca5ad8cd"
+          test "$(git -C root-control rev-parse HEAD)" = "9ce075d50c6007a4266a38a36024de3df3c051a4"
           test "$(git -C historical-zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
           test -f root-control/src/zog/root_control/daemon.py
           test -f box-control/src/zog/box_control/specification.py
