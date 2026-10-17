@@ -357,3 +357,21 @@ def test_host_welcome_mode_refuses_station_socket_and_unapproved_privilege(monke
     with pytest.raises(RoleBrokerError, match="unapproved console"):
         module.main(args + ["--root-control-socket", "/run/station/socket"])
     assert events == ["activated"]
+
+
+def test_dedicated_console_listener_cannot_fall_back_to_station_role(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from zog.box_control import application_progress_broker as module
+    from zog.box_control.role_broker import RoleBrokerError
+    monkeypatch.setattr(module.os, "geteuid", lambda: 12002)
+    monkeypatch.setattr(module, "Project", lambda p: SimpleNamespace(
+        require_state_allowed=lambda: None,
+    ))
+    monkeypatch.setattr(module, "BoxControl", lambda p, **kwargs: Source())
+    @contextmanager
+    def activated():
+        yield SimpleNamespace(getsockname=lambda: str(module.CONSOLE_SOCKET))
+    monkeypatch.setattr(module, "_activated_socket", activated)
+    with pytest.raises(RoleBrokerError, match="requires host-welcome role"):
+        module.main(["--project", str(tmp_path), "--authorized-uid", "12001"])
