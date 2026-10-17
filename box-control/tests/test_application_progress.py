@@ -253,3 +253,107 @@ def test_consumer_rejects_wrong_server_uid_before_receiving_reply(monkeypatch):
     )
     with pytest.raises(ProgressClientError, match="peer-identity"):
         client.snapshot()
+
+ 
+
+def test_host_welcome_listener_accepts_exact_root_owned_0600_socket(monkeypatch):
+    import stat
+    from pathlib import Path
+    from types import SimpleNamespace
+    from zog.box_control import application_progress_broker as module
+
+    target = module.CONSOLE_SOCKET
+    assert str(target) == "/run/host-welcome/controller-progress.sock"
+    valid = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o600, st_uid=12001)
+    original_lstat = Path.lstat
+
+    def safe_lstat(self):
+        if self == target:
+            return valid
+        if self == Path("/run") or self == target.parent:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+        return original_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", safe_lstat)
+    sock = SimpleNamespace(getsockname=lambda: str(target))
+    module.verify_host_welcome_listener(sock, 12001)
+
+    from zog.box_control.role_broker import RoleBrokerError
+    with pytest.raises(RoleBrokerError, match="wrong host-welcome listener"):
+        module.verify_host_welcome_listener(
+            SimpleNamespace(getsockname=lambda: "/run/zog-host-export/application-progress/application-progress.sock"),
+            12001,
+        )
+    with pytest.raises(RoleBrokerError, match="invalid host-welcome consumer"):
+        module.verify_host_welcome_listener(sock, True)
+
+
+@pytest.mark.parametrize("attack", [
+    "wrong-owner", "world-readable", "socket-symlink", "parent-writable",
+    "parent-user-owned", "parent-symlink",
+])
+def test_host_welcome_listener_rejects_unsafe_ownership_or_ancestry(monkeypatch, attack):
+    import stat
+    from pathlib import Path
+    from types import SimpleNamespace
+    from zog.box_control import application_progress_broker as module
+    from zog.box_control.role_broker import RoleBrokerError
+
+    target = module.CONSOLE_SOCKET
+    original_lstat = Path.lstat
+
+    def forged_lstat(self):
+        if self == target:
+            return SimpleNamespace(
+                st_mode=(stat.S_IFLNK | 0o600 if attack == "socket-symlink" else
+                         stat.S_IFSOCK | (0o666 if attack == "world-readable" else 0o600)),
+                st_uid=12002 if attack == "wrong-owner" else 12001,
+            )
+        if self == Path("/run") or self == target.parent:
+            bad = self == target.parent
+            return SimpleNamespace(
+                st_mode=(stat.S_IFLNK | 0o755 if bad and attack == "parent-symlink"
+                         else stat.S_IFDIR | (0o777 if bad and attack == "parent-writable" else 0o755)),
+                st_uid=12002 if bad and attack == "parent-user-owned" else 0,
+            )
+        return original_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", forged_lstat)
+    sock = SimpleNamespace(getsockname=lambda: str(target))
+    with pytest.raises(RoleBrokerError, match="untrusted console"):
+        module.verify_host_welcome_listener(sock, 12001)
+
+
+def test_host_welcome_mode_refuses_station_socket_and_unapproved_privilege(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from zog.box_control import application_progress_broker as module
+    from zog.box_control.role_broker import RoleBrokerError
+    monkeypatch.setattr(module.os, "geteuid", lambda: 12002)
+    monkeypatch.setattr(module, "Project", lambda p: SimpleNamespace(
+        require_state_allowed=lambda: None,
+    ))
+    monkeypatch.setattr(module, "BoxControl", lambda p, **kwargs: Source())
+    monkeypatch.setattr(
+        "zog.box_control.runtime.root_control.RootControlSystemdTransport",
+        lambda p: SimpleNamespace(socket_path=p),
+    )
+    events = []
+
+    @contextmanager
+    def activated():
+        events.append("activated")
+        yield SimpleNamespace()
+
+    monkeypatch.setattr(module, "_activated_socket", activated)
+    monkeypatch.setattr(module, "verify_host_welcome_listener",
+                        lambda sock, uid: events.append(("verified", uid)))
+    args = ["--project", str(tmp_path), "--authorized-uid", "12001",
+            "--observer-role", "host-welcome"]
+    with pytest.raises(RoleBrokerError, match="unapproved console"):
+        module.main(args)
+    assert events == ["activated"]
+    events.clear()
+    with pytest.raises(RoleBrokerError, match="unapproved console"):
+        module.main(args + ["--root-control-socket", "/run/station/socket"])
+    assert events == ["activated"]
