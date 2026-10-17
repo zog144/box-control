@@ -349,7 +349,7 @@ def test_host_welcome_mode_refuses_station_socket_and_unapproved_privilege(monke
     monkeypatch.setattr(module, "verify_host_welcome_listener",
                         lambda sock, uid: events.append(("verified", uid)))
     args = ["--project", str(tmp_path), "--authorized-uid", "12001",
-            "--observer-role", "host-welcome"]
+            "--observer-role", "host-welcome", "--controller-owner-uid", "12002"]
     with pytest.raises(RoleBrokerError, match="unapproved console"):
         module.main(args)
     assert events == ["activated"]
@@ -375,3 +375,20 @@ def test_dedicated_console_listener_cannot_fall_back_to_station_role(monkeypatch
     monkeypatch.setattr(module, "_activated_socket", activated)
     with pytest.raises(RoleBrokerError, match="requires host-welcome role"):
         module.main(["--project", str(tmp_path), "--authorized-uid", "12001"])
+
+
+def test_console_broker_owner_uid_pin_is_not_optional_or_client_chosen(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from zog.box_control import application_progress_broker as module
+    from zog.box_control.role_broker import RoleBrokerError
+    monkeypatch.setattr(module.os, "geteuid", lambda: 12002)
+    base = ["--project", str(tmp_path), "--authorized-uid", "12001",
+            "--observer-role", "host-welcome",
+            "--root-control-socket", "/run/zog/root-control.sock"]
+    with pytest.raises(RoleBrokerError, match="unapproved console controller owner"):
+        module.main(base)
+    with pytest.raises(RoleBrokerError, match="unapproved console controller owner"):
+        module.main(base + ["--controller-owner-uid", "12003"])
+    with pytest.raises(RoleBrokerError, match="reserved for console"):
+        module.main(["--project", str(tmp_path), "--authorized-uid", "12001",
+                     "--controller-owner-uid", "12002"])
