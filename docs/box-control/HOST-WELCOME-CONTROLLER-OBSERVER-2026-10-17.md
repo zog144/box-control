@@ -19,7 +19,7 @@ Host-install's root-protected systemd service **must** include:
 ```text
 User=<approved-numeric-controller-owner-uid>
 Group=<approved-numeric-controller-owner-gid>
-ExecStart=<approved-fixed-python> -m zog.box_control.application_progress_broker --project <approved-absolute-controller-project> --authorized-uid <approved-numeric-host-welcome-uid> --root-control-socket /run/zog/root-control.sock --observer-role host-welcome
+ExecStart=<approved-fixed-python> -m zog.box_control.application_progress_broker --project <approved-absolute-controller-project> --authorized-uid <approved-numeric-host-welcome-uid> --root-control-socket /run/zog/root-control.sock --observer-role host-welcome --controller-owner-uid <approved-numeric-controller-owner-uid>
 ```
 
 The corresponding socket unit is a *separate* root-installed AF_UNIX socket with:
@@ -33,7 +33,7 @@ Accept=no
 
 The root-owned systemd unit may specify an explicit approved consumer GID as `SocketGroup`, but **must not** use group mode/access as authorization; it must not grant access to station web or ordinary applications. The broker itself checks Linux `SO_PEERCRED` **before frame parsing**, admits only `--authorized-uid`, accepts only `snapshot` and inert `local-session`, and returns only bounded secret-free statuses. No launch, prepare, cancel, build, filesystem, login or credential API is added.
 
-Source extension in `application_progress_broker.py`: `--observer-role host-welcome` **requires** the exact inherited activated listener pathname, root-owned parent chain with no symlink or group/world write, listener socket inode type, UID equal to `--authorized-uid`, and file mode **exactly** `0600`. It rejects the dedicated console listener when the installer omits the explicit role flag. Station mode retains the earlier activation behavior so no existing station unit needs changing. `--root-control-socket` must remain the existing literal `/run/zog/root-control.sock`; root control's own peer UID policy still protects that endpoint.
+Source extension in `application_progress_broker.py`: `--observer-role host-welcome` **requires** the exact inherited activated listener pathname, root-owned parent chain with no symlink or group/world write, listener socket inode type, UID equal to `--authorized-uid`, and file mode **exactly** `0600`. It rejects the dedicated console listener when the installer omits the explicit role flag, and requires the executing UID to match the separately pinned numeric `--controller-owner-uid` (at least 1000). Station mode rejects this console-only option. Station mode retains the earlier activation behavior so no existing station unit needs changing. `--root-control-socket` must remain the existing literal `/run/zog/root-control.sock`; root control's own peer UID policy still protects that endpoint.
 
 The verified socket path and numeric consumer UID are **installation authority** held by root-owned systemd files; a JSON request cannot select either. The broker's permission check does not substitute for installed-unit authenticity, actual package bytes or filesystem denial of wrong peers. It is deliberately not an independent controller-managed application runtime and gives host-welcome no additional execution authority.
 
