@@ -98,9 +98,17 @@ def main(argv=None):
     parser.add_argument("--authorized-uid", required=True, type=int)
     parser.add_argument("--root-control-socket")
     parser.add_argument("--observer-role", choices=("station", "host-welcome"), default="station")
+    parser.add_argument("--controller-owner-uid", type=int, default=None)
     args = parser.parse_args(argv)
     if os.geteuid() == 0 or os.geteuid() == args.authorized_uid:
         raise RoleBrokerError("distinct nonroot controller owner required")
+    if args.observer_role == "host-welcome":
+        if (type(args.controller_owner_uid) is not int
+                or args.controller_owner_uid < 1000
+                or args.controller_owner_uid != os.geteuid()):
+            raise RoleBrokerError("unapproved console controller owner")
+    elif args.controller_owner_uid is not None:
+        raise RoleBrokerError("controller owner pin reserved for console observer")
     path = Path(args.project)
     if (not path.is_absolute() or path == Path("/")
             or path != path.resolve()):
