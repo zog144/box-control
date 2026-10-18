@@ -226,9 +226,30 @@ def test_inspection_evidence_schema_fails_closed(monkeypatch, mutation):
 
 def test_host_deploy_inspection_client_is_bound_to_fixed_result_schema(monkeypatch):
     from zog.box_control.issuer_inspection_evidence import sanitize_issuer_inspection
-    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock")
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock", controller_uid=200002)
     monkeypatch.setattr(client, "_call", lambda op, **kwargs: inspection_evidence(kwargs["request_id"]))
     assert client.inspect_issuer_result("SIGNED-ID-123")["status"] == "verified"
     monkeypatch.setattr(client, "_call", lambda op, **kwargs: {"status": "verified"})
     with pytest.raises(RoleBrokerError):
         client.inspect_issuer_result("SIGNED-ID-123")
+
+
+def test_inspection_client_requires_pinned_server_peer_before_sending(monkeypatch):
+    from zog.box_control import role_broker_client as c
+    unbound = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock")
+    with pytest.raises(RoleBrokerError, match="authenticated controller owner UID"):
+        unbound.inspect_issuer_result("SIGNED-ID-123")
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock",
+                                   controller_uid=200002)
+    sent = []
+    class FakeSocket:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def settimeout(self, seconds): pass
+        def connect(self, path): pass
+        def sendall(self, data): sent.append(data)
+    monkeypatch.setattr(c.socket, "socket", lambda *_: FakeSocket())
+    monkeypatch.setattr("zog.box_control.role_broker._peer_uid", lambda sock: 200003)
+    with pytest.raises(RoleBrokerError, match="server UID"):
+        client.inspect_issuer_result("SIGNED-ID-123")
+    assert sent == []
