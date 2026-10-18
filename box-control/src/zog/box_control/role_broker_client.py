@@ -15,7 +15,8 @@ from .role_broker import SCHEMA, RoleBrokerError, _decode, _json_bytes
 
 
 class RoleBrokerClient:
-    def __init__(self, socket_path: str | Path, *, application: str, timeout_seconds=10):
+    def __init__(self, socket_path: str | Path, *, application: str,
+                 timeout_seconds=10, expected_server_uid=None):
         path = Path(socket_path)
         if not path.is_absolute() or path == Path("/"):
             raise ValueError("absolute broker Unix socket path required")
@@ -24,6 +25,11 @@ class RoleBrokerClient:
         from .role_broker import _APPLICATION
         if not isinstance(application, str) or not _APPLICATION.fullmatch(application):
             raise ValueError("explicit application binding required")
+        if expected_server_uid is not None and (
+                type(expected_server_uid) is not int or
+                not 1000 <= expected_server_uid < 2**31):
+            raise ValueError("fixed non-root broker server UID is required")
+        self.expected_server_uid = expected_server_uid
         self.application = application
         self.socket_path = path
         self.timeout_seconds = float(timeout_seconds)
@@ -34,6 +40,10 @@ class RoleBrokerClient:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
             conn.settimeout(self.timeout_seconds)
             conn.connect(str(self.socket_path))
+            if self.expected_server_uid is not None:
+                from .role_broker import _peer_uid
+                if _peer_uid(conn) != self.expected_server_uid:
+                    raise RoleBrokerError("broker server UID differs", code="scope-rejected")
             conn.sendall(_json_bytes(request, 4096))
             result = _decode_reply(conn)
         if not isinstance(result, dict):
