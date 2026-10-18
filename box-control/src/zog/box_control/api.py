@@ -464,6 +464,16 @@ class BoxControl:
             project_root=self.project.path, request_id=request_id,
         )
 
+    def inspect_issuer_result(self, request_id: str):
+        """Read a selected inspect result through privileged, invocation-scoped evidence.
+
+        Caller supplies only a durable request identity. Root-control resolves
+        the exact saved runtime, issuer grant and journal invocation.
+        """
+        return self.systemd_transport.issuer_inspect_result(
+            project_root=self.project.path, request_id=request_id,
+        )
+
     def application_request_result(self, request_id: str):
         return self._request_store().result(request_id)
 
