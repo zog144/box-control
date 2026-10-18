@@ -43,4 +43,7 @@ class IssuerLifecycleClient(RoleBrokerClient):
 
     def inspect_issuer_result(self, request_id):
         """Read root-control-attested one-shot inspection for an exact request."""
-        return self._call("inspect-result", request_id=request_id)
+        from .issuer_inspection_evidence import sanitize_issuer_inspection
+        return sanitize_issuer_inspection(
+            self._call("inspect-result", request_id=request_id), request_id,
+        )
