@@ -1,8 +1,8 @@
 """Authenticated certificate lifecycle controller broker for host-deploy.
 
 Dedicated socket-activated non-root controller-owner process. Does not expose
-root-control or raw project access. One immutable issuer application with two
-selected commands: renew or stage; no shell, policy, UID, path or unit selector.
+root-control or raw project access. One immutable issuer application with three
+selected commands: renew, inspect or stage; no shell, policy, UID, path or unit selector.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from .role_broker import (
 )
 from .runtime.root_control import RootControlSystemdTransport
 
-_ALLOWED = frozenset({"renew", "stage"})
+_ALLOWED = frozenset({"renew", "stage", "inspect"})
 _APP = "certify-manage"
 
 
@@ -79,6 +79,7 @@ class IssuerLifecycleBroker:
             "issue": set(), "start": {"request_id", "program"},
             "result": {"request_id"}, "cancel": {"request_id"},
             "observe": {"runtime_id"},
+            "inspect-result": {"request_id"},
         }
         if operation not in shapes or set(request) != ({"schema", "operation"} | shapes[operation]):
             raise RoleBrokerError("unsupported issuer lifecycle request shape")
@@ -106,7 +107,7 @@ class IssuerLifecycleBroker:
         if operation == "start":
             program = request["program"]
             if type(program) is not str or program not in _ALLOWED:
-                raise RoleBrokerError("only exact renew/stage allowed", code="scope-rejected")
+                raise RoleBrokerError("only exact renew/inspect/stage allowed", code="scope-rejected")
             self._definition(program)
             state = self.control.application_preparation(_APP)
             if not isinstance(state, dict) or state.get("state") != "ready":
@@ -123,6 +124,11 @@ class IssuerLifecycleBroker:
                     "runtime_id": runtime.runtime_id}
         if operation == "result":
             return self._result(request["request_id"])
+        if operation == "inspect-result":
+            binding = self._result(request["request_id"])
+            if binding["program"] != "inspect" or binding["status"] != "satisfied":
+                raise RoleBrokerError("selected inspection not satisfied", code="evidence-unavailable")
+            return self.control.inspect_issuer_result(request["request_id"])
         if operation == "cancel":
             # Do not let arbitrary request IDs cancel station/archive work.
             known = self._result(request["request_id"])
@@ -145,7 +151,7 @@ def respond_one(broker, conn):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Pinned certificate renew/stage controller broker")
+    parser = argparse.ArgumentParser(description="Pinned certificate renew/inspect/stage controller broker")
     parser.add_argument("--project", required=True)
     parser.add_argument("--authorized-uid", type=int, required=True)
     parser.add_argument("--generation", required=True)
