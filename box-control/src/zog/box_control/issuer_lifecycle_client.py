@@ -1,4 +1,4 @@
-"""Fixed host-deploy client for one application and renew/stage only."""
+"""Fixed host-deploy client for one application and renew/inspect/stage only."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,7 +16,7 @@ class IssuerLifecycleClient(RoleBrokerClient):
         )
 
     def launch_application(self, application, *, request_id, program_name):
-        if application != self.application or program_name not in {"renew", "stage"}:
+        if application != self.application or program_name not in {"renew", "stage", "inspect"}:
             raise RoleBrokerError("issuer lifecycle selection is not authorized",
                                   code="scope-rejected")
         result = self._call("start", request_id=request_id, program=program_name)
@@ -40,3 +40,7 @@ class IssuerLifecycleClient(RoleBrokerClient):
 
     def observe_application_runtime(self, runtime_id):
         return self._call("observe", runtime_id=runtime_id)
+
+    def inspect_issuer_result(self, request_id):
+        """Read root-control-attested one-shot inspection for an exact request."""
+        return self._call("inspect-result", request_id=request_id)
