@@ -128,7 +128,11 @@ class IssuerLifecycleBroker:
             binding = self._result(request["request_id"])
             if binding["program"] != "inspect" or binding["status"] != "satisfied":
                 raise RoleBrokerError("selected inspection not satisfied", code="evidence-unavailable")
-            return self.control.inspect_issuer_result(request["request_id"])
+            from .issuer_inspection_evidence import sanitize_issuer_inspection
+            return sanitize_issuer_inspection(
+                self.control.inspect_issuer_result(request["request_id"]),
+                request["request_id"],
+            )
         if operation == "cancel":
             # Do not let arbitrary request IDs cancel station/archive work.
             known = self._result(request["request_id"])
