@@ -6,10 +6,10 @@ import re
 
 from .role_broker import RoleBrokerError, _REQUEST, _RUNTIME
 
-_DIGEST = re.compile(r"[0-9a-f]{64}\\Z")
-_POLICY = re.compile(r"sha256:[0-9a-f]{64}\\Z")
-_STORAGE = re.compile(r"[0-9a-f]{32}\\Z")
-_CERT = re.compile(r"[a-z][a-z0-9-]{0,62}\\Z")
+_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_POLICY = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_STORAGE = re.compile(r"[0-9a-f]{32}\Z")
+_CERT = re.compile(r"[a-z][a-z0-9-]{0,62}\Z")
 _FIELDS = {"schema", "request_id", "runtime_id", "program", "boot_id",
            "invocation_id", "storage_id", "grant_id", "issuer_uid", "issuer_gid",
            "host_policy_digest", "inspection", "status", "tls_ready"}
