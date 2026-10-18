@@ -9,10 +9,11 @@ from .role_broker_client import RoleBrokerClient
 
 
 class IssuerLifecycleClient(RoleBrokerClient):
-    def __init__(self, socket_path: str | Path, *, timeout_seconds=10):
+    def __init__(self, socket_path: str | Path, *, timeout_seconds=10,
+                 controller_uid=None):
         super().__init__(
             socket_path, application="certify-manage",
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=timeout_seconds, expected_server_uid=controller_uid,
         )
 
     def launch_application(self, application, *, request_id, program_name):
@@ -42,7 +43,10 @@ class IssuerLifecycleClient(RoleBrokerClient):
         return self._call("observe", runtime_id=runtime_id)
 
     def inspect_issuer_result(self, request_id):
-        """Read root-control-attested one-shot inspection for an exact request."""
+        """Read an exact inspection only from independently pinned controller UID."""
+        if self.expected_server_uid is None:
+            raise RoleBrokerError("authenticated controller owner UID required for inspect",
+                                  code="scope-rejected")
         from .issuer_inspection_evidence import sanitize_issuer_inspection
         return sanitize_issuer_inspection(
             self._call("inspect-result", request_id=request_id), request_id,
