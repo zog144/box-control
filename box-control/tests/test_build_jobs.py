@@ -389,3 +389,99 @@ def test_invalid_cpu_weight_rejected(setup,value):
     _,_,request=setup
     weighted=dict(request,resource_limits=dict(request['resource_limits'],**{'cpu-weight':value}))
     with pytest.raises(RuntimeOperationError):canonical_request(weighted)
+
+
+def test_independent_registered_build_lanes_run_without_replacing_first_writer(setup):
+    """One running writer per registered root, not one systemd service globally."""
+    c, t, first = setup
+    t.live = True
+    initial = submit(setup)
+    assert initial["state"] == "running"
+    second_id = "b" * 32
+    c.register_build_root(
+        resource_id=second_id, prepared_root="/root/second",
+        source_directory="/root/second-source",
+        output_directory="/root/second-output",
+        input_manifest_id="manifest-2",
+        execution_user_id=1001, execution_group_id=1001,
+    )
+    independent = dict(first, build_root_id=second_id,
+                       source_workspace_id=second_id + "-source",
+                       output_workspace_id=second_id + "-output")
+    later = c.submit_build_job(request_id=c.issue_build_request_id(), **independent)
+    assert later["state"] == "running"
+    assert later["job_id"] != initial["job_id"]
+    assert t.build_starts == 2
+    assert c.inspect_build_job(initial["job_id"])["state"] == "running"
+    with pytest.raises(RuntimeOperationError, match="unfinished writer"):
+        c.submit_build_job(request_id=c.issue_build_request_id(), **first)
+    assert t.build_starts == 2
+
+
+def test_gateway_status_is_redacted_read_only_and_invocation_scoped(setup):
+    from zog.box_control.build_jobs import BuildJobs
+    c, t, request = setup
+    request["environment"]["SECRET_TOKEN"] = "do-not-export"
+    request["command"] = ["cc", "--private-argument"]
+    job = submit(setup)
+    saved = BuildJobs(c)
+    job["boot_id"] = "b" * 32
+    saved.save(job)
+    before = t.build_starts
+    status = c.build_job_status(job["job_id"])
+    assert status["schema"] == "zog-controller-build-job-status-v1"
+    assert status["state"] == "completed"
+    assert status["outcome"] == "success"
+    assert status["request_id"] == job["request_id"]
+    assert status["job_id"] == job["job_id"]
+    assert status["evidence_reference"] == {
+        "kind": "systemd-journal-invocation",
+        "boot_id": "b" * 32, "invocation_id": "a" * 32,
+    }
+    assert status["process_cleanup_complete"] is True
+    assert status["uncertain"] is False
+    assert "do-not-export" not in json.dumps(status)
+    assert "--private-argument" not in json.dumps(status)
+    assert "/root/" not in json.dumps(status)
+    assert t.build_starts == before
+    assert not (c.project.state_dir / "mutation-incomplete.json").exists()
+
+
+def test_gateway_status_reports_uncertain_lost_reply_without_mutating(setup):
+    c, t, request = setup
+    request_id = c.issue_build_request_id()
+    t.failure = "start"
+    with pytest.raises(RecoveryRequired):
+        c.submit_build_job(request_id=request_id, **request)
+    from zog.box_control.build_jobs import BuildJobs
+    key = BuildJobs.job_id(request_id)
+    marker = c.project.state_dir / "mutation-incomplete.json"
+    assert marker.exists()
+    before = t.build_starts
+    result = c.build_job_status(key)
+    assert result["job_id"] == key
+    assert result["state"] == "starting"
+    assert result["uncertain"] is True
+    assert result["evidence_reference"] is None
+    assert marker.exists() and before == t.build_starts
+
+
+def test_gateway_status_rejects_contradictory_terminal_and_unsupported_identity(setup):
+    from zog.box_control.build_jobs import BuildJobs
+    c, t, request = setup
+    job = submit(setup)
+    store = BuildJobs(c)
+    job["outcome"] = "success"
+    job["invocation_id"] = None
+    store.save(job)
+    with pytest.raises(RecoveryRequired, match="invocation evidence"):
+        c.build_job_status(job["job_id"])
+    job["invocation_id"] = "a" * 32
+    job["boot_id"] = "b" * 32
+    job["resources_released"] = True
+    job["process_cleanup_complete"] = False
+    store.save(job)
+    with pytest.raises(RecoveryRequired, match="cleanup"):
+        c.build_job_status(job["job_id"])
+    with pytest.raises(RuntimeOperationError, match="invalid build identity"):
+        c.build_job_status("../../other")
