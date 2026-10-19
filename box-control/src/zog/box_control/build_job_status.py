@@ -75,6 +75,8 @@ def safe_status(raw, job_id):
         raise RecoveryRequired("completed build success lacks invocation evidence")
     return {
         "schema": _SCHEMA,
+        # A saved 'running' state is NOT a live systemd observation.
+        "observation_kind": "persisted-controller-record",
         "job_id": job_id,
         "request_id": raw["request_id"],
         "build_root_id": raw["request"]["build_root_id"],
