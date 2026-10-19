@@ -554,6 +554,17 @@ class BoxControl:
         from .build_jobs import BuildJobs
         return BuildJobs(self).load('job:'+job_id)
 
+    def build_job_status(self, job_id):
+        """Sanitized, non-mutating job state and journal identity for a gateway.
+
+        Does not refresh, issue, start, cancel, or expose command/environment.
+        Observation freshness and log availability remain independent.
+        """
+        from .build_jobs import BuildJobs
+        from .build_job_status import safe_status
+        from .build_protocol import identity
+        return safe_status(BuildJobs(self).load('job:' + identity(job_id)), job_id)
+
     def refresh_build_job(self, job_id):
         from .build_jobs import BuildJobs
         with self._mutation(build_entity='job:'+job_id):
