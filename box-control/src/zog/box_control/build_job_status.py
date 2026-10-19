@@ -30,7 +30,8 @@ def safe_status(raw, job_id):
             or raw.get("job_id") != job_id
             or raw.get("state") not in _STATES
             or raw.get("outcome") not in _OUTCOMES
-            or not _hex(raw.get("request", {}).get("build_root_id"))
+            or type(raw.get("request")) is not dict
+            or not _hex(raw["request"].get("build_root_id"))
             or raw.get("runtime_id") != "build-" + job_id
             or type(raw.get("request_id")) is not str
             or not 1 <= len(raw["request_id"]) <= 200
@@ -54,11 +55,20 @@ def safe_status(raw, job_id):
            for x in (code, signal)):
         raise RecoveryRequired("invalid build exit evidence")
     boot, invocation = raw.get("boot_id"), raw.get("invocation_id")
+    def systemd_id(value):
+        if type(value) is not str:
+            return None
+        normalized = value.replace("-", "")
+        return normalized if _hex(normalized) and (
+            value == normalized or
+            re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value)
+        ) else None
     # A locatable journal stream is not proof that its contents are retained.
+    boot, invocation = systemd_id(boot), systemd_id(invocation)
     evidence = (
         {"kind": "systemd-journal-invocation", "boot_id": boot,
          "invocation_id": invocation}
-        if _hex(boot) and _hex(invocation) else None
+        if boot and invocation else None
     )
     if raw["outcome"] == "success" and raw["process_cleanup_complete"] and (
             code != 0 or evidence is None):
