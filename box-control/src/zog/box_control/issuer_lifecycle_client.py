@@ -35,8 +35,11 @@ class IssuerLifecycleClient(RoleBrokerClient):
         if type(request_id) is not str or _REQUEST.fullmatch(request_id) is None:
             raise RoleBrokerError("invalid issuer request identity", code="scope-rejected")
         result = self._call("result", request_id=request_id)
+        program = result.get("program") if type(result) is dict else None
         if (type(result) is not dict or result.get("request_id") != request_id
-                or result.get("program") not in {"renew", "inspect", "stage", None}):
+                or (program is not None
+                    and (type(program) is not str
+                         or program not in {"renew", "inspect", "stage"}))):
             raise RoleBrokerError("issuer result identity or selection mismatch",
                                   code="scope-rejected")
         return result
