@@ -260,13 +260,14 @@ def test_issuer_client_accepts_exact_selected_result_programs(monkeypatch, progr
     client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock", controller_uid=200002)
     request_id = "SIGNED-ID-INSPECT"
     received = []
+    expected = {"request_id": request_id, "program": program,
+                "runtime_id": "RUNTIME1", "status": "satisfied"}
     def response(operation, **kwargs):
         received.append((operation, kwargs))
-        return {"request_id": request_id, "program": program,
-                "runtime_id": "RUNTIME1", "status": "satisfied"}
+        return expected
     monkeypatch.setattr(client, "_call", response)
-    assert client.application_request_result(request_id) == response("result", request_id=request_id)
-    assert received == [("result", {"request_id": request_id})] * 2
+    assert client.application_request_result(request_id) == expected
+    assert received == [("result", {"request_id": request_id})]
 
 
 @pytest.mark.parametrize("bad", (
