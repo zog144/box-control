@@ -29,9 +29,16 @@ class IssuerLifecycleClient(RoleBrokerClient):
         )
 
     def application_request_result(self, request_id):
+        # The durable issuer request identity is selected by the caller's
+        # protected operation journal, not by a returned broker field.
+        from .role_broker import _REQUEST
+        if type(request_id) is not str or _REQUEST.fullmatch(request_id) is None:
+            raise RoleBrokerError("invalid issuer request identity", code="scope-rejected")
         result = self._call("result", request_id=request_id)
-        if result.get("program") not in {"renew", "stage", None}:
-            raise RoleBrokerError("issuer result selection mismatch", code="scope-rejected")
+        if (type(result) is not dict or result.get("request_id") != request_id
+                or result.get("program") not in {"renew", "inspect", "stage", None}):
+            raise RoleBrokerError("issuer result identity or selection mismatch",
+                                  code="scope-rejected")
         return result
 
     def cancel_application_launch(self, application, *, request_id):
