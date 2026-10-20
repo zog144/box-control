@@ -253,3 +253,96 @@ def test_inspection_client_requires_pinned_server_peer_before_sending(monkeypatc
     with pytest.raises(RoleBrokerError, match="server UID"):
         client.inspect_issuer_result("SIGNED-ID-123")
     assert sent == []
+
+
+@pytest.mark.parametrize("program", ("renew", "inspect", "stage"))
+def test_issuer_client_accepts_exact_selected_result_programs(monkeypatch, program):
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock", controller_uid=200002)
+    request_id = "SIGNED-ID-INSPECT"
+    received = []
+    def response(operation, **kwargs):
+        received.append((operation, kwargs))
+        return {"request_id": request_id, "program": program,
+                "runtime_id": "RUNTIME1", "status": "satisfied"}
+    monkeypatch.setattr(client, "_call", response)
+    assert client.application_request_result(request_id) == response("result", request_id=request_id)
+    assert received == [("result", {"request_id": request_id})] * 2
+
+
+@pytest.mark.parametrize("bad", (
+    "issue", "recover", "shell", "arbitrary", "", True, 1, ["inspect"],
+))
+def test_issuer_client_rejects_other_program_results(monkeypatch, bad):
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock")
+    monkeypatch.setattr(client, "_call", lambda op, **kw: {
+        "request_id": kw["request_id"], "program": bad,
+        "runtime_id": "RUNTIME1", "status": "satisfied",
+    })
+    with pytest.raises(RoleBrokerError, match="selection"):
+        client.application_request_result("SIGNED-ID-INSPECT")
+
+
+@pytest.mark.parametrize("borrowed", (
+    "SIGNED-ID-OTHER", "SIGNED-ID-RENEW", None, 12,
+))
+def test_issuer_client_rejects_borrowed_or_missing_result_request_id(monkeypatch, borrowed):
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock")
+    monkeypatch.setattr(client, "_call", lambda op, **kw: {
+        "request_id": borrowed, "program": "inspect",
+        "runtime_id": "RUNTIME1", "status": "satisfied",
+    })
+    with pytest.raises(RoleBrokerError, match="identity"):
+        client.application_request_result("SIGNED-ID-INSPECT")
+
+
+def test_issuer_client_requires_exact_id_before_sending_result_lookup(monkeypatch):
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock")
+    called = []
+    monkeypatch.setattr(client, "_call", lambda *a, **kw: called.append((a, kw)))
+    for request_id in ("../borrowed", "", None, True, 37, "id with spaces"):
+        with pytest.raises(RoleBrokerError, match="request identity"):
+            client.application_request_result(request_id)
+    assert called == []
+
+
+def test_issuer_client_checks_server_uid_on_selected_inspect_status(monkeypatch):
+    from zog.box_control import role_broker_client
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock", controller_uid=200002)
+    sent = []
+    class FakeSocket:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def settimeout(self, timeout): pass
+        def connect(self, address): pass
+        def sendall(self, data): sent.append(data)
+    monkeypatch.setattr(role_broker_client.socket, "socket", lambda *a: FakeSocket())
+    monkeypatch.setattr("zog.box_control.role_broker._peer_uid", lambda sock: 200003)
+    with pytest.raises(RoleBrokerError, match="server UID"):
+        client.application_request_result("SIGNED-ID-INSPECT")
+    assert sent == []
+
+
+def test_broker_returns_request_bound_inspect_and_rejects_unselected_program(monkeypatch):
+    b, ctl = broker(monkeypatch)
+    ctl.request_status["SIGNED-ID-INSPECT"] = SimpleNamespace(
+        application="certify-manage", program_name="inspect",
+        operation=SimpleNamespace(value="launch"),
+        status=SimpleNamespace(value="satisfied"), runtime_id="RUNTIME1",
+    )
+    ctl.request_status["SIGNED-ID-RENEW"] = SimpleNamespace(
+        application="certify-manage", program_name="renew",
+        operation=SimpleNamespace(value="launch"),
+        status=SimpleNamespace(value="satisfied"), runtime_id="RUNTIME2",
+    )
+    inspect = b.handle(request("result", request_id="SIGNED-ID-INSPECT"))
+    assert inspect == {
+        "request_id": "SIGNED-ID-INSPECT", "program": "inspect",
+        "runtime_id": "RUNTIME1", "status": "satisfied",
+    }
+    assert b.handle(request("result", request_id="SIGNED-ID-RENEW"))["program"] == "renew"
+    # No borrowed ID can be reinterpreted to perform inspect-result.
+    with pytest.raises(RoleBrokerError, match="not satisfied"):
+        b.handle(request("inspect-result", request_id="SIGNED-ID-RENEW"))
+    ctl.request_status["SIGNED-ID-INSPECT"].program_name = "shell"
+    with pytest.raises(RoleBrokerError, match="scope"):
+        b.handle(request("result", request_id="SIGNED-ID-INSPECT"))
