@@ -1,6 +1,8 @@
 name: Boot evaluator recovery regression
 
 on:
+  pull_request:
+    branches: [main, unstable]
   push:
     branches: [unstable]
     paths:
@@ -28,7 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: zog144/root-control
-          ref: 11a458e7b8d02f18e8f2e8e20abf0d68f4142f56
+          ref: 8a9583924109ef324eb80071953151c8c7e20b33
           path: root-control
       - name: Check out public aggregate dependency
         uses: actions/checkout@v4
