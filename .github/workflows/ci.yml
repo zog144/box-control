@@ -12,16 +12,23 @@ permissions:
 
 jobs:
   public-aggregate-compatibility:
-    name: public-aggregate-compatibility (Python ${{ matrix.python-version }})
+    name: current-companion-source-compatibility (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     env:
-      PYTHONPATH: ${{ github.workspace }}/box-control/src:${{ github.workspace }}/companions/zog/src
+      PYTHONPATH: ${{ github.workspace }}/box-control/src:${{ github.workspace }}/companions/root-control/src:${{ github.workspace }}/.ci-deps
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout exact reviewed root-control companion
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/root-control
+          ref: 8a9583924109ef324eb80071953151c8c7e20b33
+          path: companions/root-control
+          persist-credentials: false
       - name: Check out immutable public Zog aggregate for companions
         uses: actions/checkout@v4
         with:
@@ -39,26 +46,54 @@ jobs:
           test -f LICENSE
           test -f LICENSES/BSD-3-Clause.txt
           test -f LICENSES/GPL-3.0-only.txt
-      - name: Validate frozen aggregate dependency
+      - name: Validate exact current privileged companion and historical support fixture
         run: |
+          test "$(git -C companions/root-control rev-parse HEAD)" = "8a9583924109ef324eb80071953151c8c7e20b33"
           test "$(git -C companions/zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
+          test -f companions/root-control/src/zog/root_control/daemon.py
           test -f companions/zog/src/zog/image_build/__init__.py
-          test -f companions/zog/src/zog/root_control/__init__.py
+          {
+            echo "## Public controller source and required identity cases"
+            echo "- Candidate controller: $(git rev-parse HEAD)"
+            echo "- Exact root-control: $(git -C companions/root-control rev-parse HEAD)"
+            echo "- Historical Zog: support modules only, not accepted current image-build"
+            echo "- No live systemd, host socket DAC, reboot or compiler UID acceptance"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Construct isolated historical support namespace
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          src = Path("companions/zog/src/zog").resolve()
+          dst = Path(".ci-deps/zog")
+          dst.mkdir(parents=True, exist_ok=True)
+          for item in src.iterdir():
+              if item.name in {"__init__.py", "__pycache__", "root_control", "box_control"}:
+                  continue
+              if item.is_dir() or (item.is_file() and item.suffix == ".py"):
+                  (dst / item.name).symlink_to(item)
+          assert not (dst / "__init__.py").exists()
+          assert not (dst / "root_control").exists()
+          assert not (dst / "box_control").exists()
+          PY
       - name: Install component and tooling
         run: |
           python -m pip install 'dbus-next==0.2.3' 'pytest>=8,<10'
-          python -m pip install --no-deps -e ./box-control
-      - name: Compile source, tests and reviewed acceptance scripts
-        run: python -m compileall -q box-control/src box-control/tests acceptance
-      - name: Run public-aggregate compatibility tests
+          python -m pip install --no-deps -e ./box-control -e ./companions/root-control
+      - name: Compile current sources, tests and reviewed acceptance scripts
+        run: python -m compileall -q box-control/src companions/root-control/src box-control/tests acceptance
+      - name: Ensure installed namespace binds current companions, not historical copies
         run: |
-          # Source-level 0.1.0's application parser predates execution_identity.
-          # Keep four new identity cases in the public tree, but treat them as
-          # an explicitly pending gate rather than reporting them as passed.
-          python -m pytest -q \
-            --deselect=box-control/tests/test_specification.py::test_symbolic_persistent_execution_identity_requires_no_explicit_user \
-            --deselect=box-control/tests/test_specification.py::test_symbolic_grant_rejects_caller_chosen_credentials \
-            --deselect=box-control/tests/test_specification.py::test_symbolic_identity_rejects_nonpersistent_or_multi_instance \
+          python - <<'PY'
+          from pathlib import Path
+          import zog.box_control, zog.root_control, zog.image_build
+          root = Path.cwd()
+          assert Path(zog.box_control.__file__).resolve().is_relative_to(root / "box-control/src")
+          assert Path(zog.root_control.__file__).resolve().is_relative_to(root / "companions/root-control/src")
+          assert Path(zog.image_build.__file__).resolve().is_relative_to(root / "companions/zog/src")
+          PY
+      - name: Run current-companion compatibility without identity deselections
+        run: |
+          python -m pytest -q -ra --strict-markers --junitxml=identity-compat-results.xml \
             box-control/tests/test_namespace_migration.py \
             box-control/tests/test_dependency.py \
             box-control/tests/test_specification.py \
@@ -68,6 +103,32 @@ jobs:
             box-control/tests/test_host_gateway.py \
             box-control/tests/test_retention.py \
             box-control/tests/test_launch_cancellation.py
+      - name: Require all four symbolic identity cases and zero skips
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          source = Path("identity-compat-results.xml")
+          if not source.is_file():
+              raise SystemExit("current-companion identity test results are missing")
+          xml = ET.parse(source)
+          cases = list(xml.iter("testcase"))
+          names = [
+              "test_symbolic_persistent_execution_identity_requires_no_explicit_user",
+              "test_symbolic_grant_rejects_caller_chosen_credentials",
+              "test_symbolic_identity_rejects_nonpersistent_or_multi_instance",
+          ]
+          hits = [sum(name in case.get("name", "") for case in cases) for name in names]
+          failures = sum(case.find("failure") is not None or case.find("error") is not None for case in cases)
+          skips = sum(case.find("skipped") is not None for case in cases)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"\\nIdentity compatibility: {len(cases)} executed; identity function cases {hits}; failures {failures}; skips {skips}; no deselection argument.\\n")
+              summary.write("Historical Zog support is not a current native image-build or systemd gate.\\n")
+          if hits != [1, 2, 1] or skips or failures:
+              raise SystemExit("required identity cases absent, failed or skipped")
+          PY
       - name: Check canonical import
         run: python -c 'import zog.box_control as b; assert b.__version__ == "0.1.0"'
 
