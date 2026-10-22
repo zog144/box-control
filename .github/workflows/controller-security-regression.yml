@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: zog144/root-control
-          ref: e6ff84448ec7103af141905749f504b7e5704fc1
+          ref: 8a9583924109ef324eb80071953151c8c7e20b33
           path: root-control
           persist-credentials: false
       - name: Checkout historical public image-build fixture (not current release)
@@ -41,7 +41,7 @@ jobs:
       - name: Verify exact immutable source identities
         run: |
           set -euo pipefail
-          test "$(git -C root-control rev-parse HEAD)" = "e6ff84448ec7103af141905749f504b7e5704fc1"
+          test "$(git -C root-control rev-parse HEAD)" = "8a9583924109ef324eb80071953151c8c7e20b33"
           test "$(git -C historical-zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
           test -f root-control/src/zog/root_control/daemon.py
           test -f box-control/src/zog/box_control/specification.py
@@ -98,7 +98,7 @@ jobs:
           target = Path("security-results.xml")
           with open(__import__("os").environ["GITHUB_STEP_SUMMARY"], "a") as summary:
               summary.write("\n## Exact security pytest selection\n")
-              summary.write("See the Test step (27 explicitly named test modules, no `--deselect` or exclusion selector).\n")
+              summary.write("See the test step: explicit security modules; no pytest deselection or exclusion selector.\n")
               if not target.exists():
                   summary.write("No results XML: suite failed before test report generation.\n")
                   raise SystemExit(1)
