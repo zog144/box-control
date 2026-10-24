@@ -89,7 +89,11 @@ def safe_status(raw, job_id):
         "signal": signal,
         "service_result": result,
         "completed_at": completed,
-        "uncertain": raw["state"] in {"starting", "unknown"}
+        # Read-only persisted state cannot establish a *current* systemd
+        # process. A saved "running" job may already have exited or its
+        # transient unit may have become unobservable after daemon-reload.
+        "uncertain": raw["state"] in {"starting", "running", "unknown",
+                                     "cancelling", "cleanup"}
                      or raw["outcome"] == "unknown",
         "evidence_reference": evidence,
     }
