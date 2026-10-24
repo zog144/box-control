@@ -485,3 +485,23 @@ def test_gateway_status_rejects_contradictory_terminal_and_unsupported_identity(
         c.build_job_status(job["job_id"])
     with pytest.raises(RuntimeOperationError, match="invalid build identity"):
         c.build_job_status("../../other")
+
+
+def test_saved_running_job_status_is_uncertain_without_live_observation(setup):
+    """An unchanged running checkpoint may outlive its systemd ExecStart."""
+    from zog.box_control.build_jobs import BuildJobs
+    c, transport, request = setup
+    transport.live = True
+    job = submit(setup)
+    assert job["state"] == "running"
+    before = (c.project.state_dir / "build-job" / (job["job_id"] + ".json")).read_bytes()
+    started = transport.build_starts
+    status = c.build_job_status(job["job_id"])
+    assert status["observation_kind"] == "persisted-controller-record"
+    assert status["state"] == "running"
+    assert status["outcome"] is None
+    assert status["uncertain"] is True
+    assert status["job_id"] == job["job_id"]
+    assert status["process_cleanup_complete"] is False
+    assert transport.build_starts == started
+    assert (c.project.state_dir / "build-job" / (job["job_id"] + ".json")).read_bytes() == before
