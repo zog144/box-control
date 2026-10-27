@@ -356,3 +356,104 @@ def test_legacy_unbound_boot_preparation_requires_same_boot_for_absent_unit(tmp_
     assert result['state'] == 'uncertain'
     assert result['steps'][0]['outcome'] is None
     assert len(transport.started) == 1
+
+
+class TimedOutIssuerStart(Transport):
+    """A PID1 start may have succeeded even if root-control's reply was lost."""
+
+    def __init__(self, *, accepted):
+        super().__init__()
+        self.accepted = accepted
+        self.attempts = 0
+
+    def start_service(self, **kwargs):
+        from zog.box_control.errors import RootControlReplyTimeout
+
+        self.attempts += 1
+        if self.accepted:
+            super().start_service(**kwargs)
+        raise RootControlReplyTimeout("systemd_start_service", 45.011)
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_preparation_start_reply_timeout_preserves_single_original_attempt(tmp_path, accepted):
+    """A late PID1 start must not be killed before its invocation is inspected."""
+    from zog.box_control.model import ApplicationRuntimeState
+
+    project = Project(tmp_path / "project")
+    declaration(project)
+    transport = TimedOutIssuerStart(accepted=accepted)
+    control = fixtures.control_for(project, tmp_path, transport, ['boot-1'])
+    raw = control.prepare_application("portal")
+    assert raw["state"] == "uncertain"
+    assert raw["steps"][0]["outcome"] is None
+    assert raw["steps"][0]["invocation_id"] is None
+    assert raw["cleanup_pending"] is True
+    assert "original start outcome unknown" in raw["error"]
+    assert transport.attempts == 1
+    assert transport.kills == [] and transport.stops == []
+
+    saved = RuntimeReferenceStore(project.runtime_reference_file).load()[
+        raw["steps"][0]["runtime_id"]
+    ]
+    assert saved.state == ApplicationRuntimeState.STARTING
+    assert saved.error is None
+    assert saved.cleanup_pending
+    assert saved.boot_id == "boot-1"
+    assert saved.programs[0].invocation_id is None
+
+    # Same/next boot cannot infer a successful migration from an absent unit.
+    unit = saved.programs[0].unit_name
+    if not accepted:
+        assert control.refresh_application_preparation("portal")["state"] == "uncertain"
+        assert transport.attempts == 1
+        return
+
+    # The original unit is still observable with its authentic invocation.
+    assert unit in transport.units
+    assert control.refresh_application_preparation("portal")["state"] == "uncertain"
+    assert transport.attempts == 1
+    assert transport.kills == [] and transport.stops == []
+    # Completing the same original execution, not a new one, is admissible.
+    transport.units[unit] = replace(
+        transport.units[unit], active_state="inactive", sub_state="dead",
+        result="success", main_pid=None,
+    )
+    ready = control.refresh_application_preparation("portal")
+    assert ready["state"] == "ready"
+    assert ready["steps"][0]["invocation_id"] == "inv-1"
+    assert ready["steps"][0]["outcome"] == "success"
+    assert transport.attempts == 1
+
+
+def test_recovered_invocation_and_journal_do_not_validate_killed_timeout_preparation(tmp_path):
+    """Native RF5BGA: a journalled start followed by SIGTERM is not a ready step."""
+    from zog.box_control.model import ApplicationRuntimeState
+
+    project = Project(tmp_path / "project")
+    declaration(project)
+    transport = TimedOutIssuerStart(accepted=True)
+    control = fixtures.control_for(project, tmp_path, transport, ['boot-1'])
+    raw = control.prepare_application("portal")
+    step = raw["steps"][0]
+    store = RuntimeReferenceStore(project.runtime_reference_file)
+    ref = store.load()[step["runtime_id"]]
+    # Model the retained native record: the InvocationID survived, but the
+    # outer start timed out, generic rollback killed it, and cleanup unloaded.
+    unit = ref.programs[0].unit_name
+    ref = replace(
+        ref, state=ApplicationRuntimeState.FAILED,
+        error="root-control reply timed out for systemd_start_service",
+        completed_at=123.0, cleanup_pending=False,
+        programs=(replace(ref.programs[0], invocation_id="79ab358ffadf491e84f87e1bba645d4a",
+                          result="success", active_state="inactive", sub_state="dead"),),
+    )
+    store.save({ref.runtime_id: ref})
+    transport.units.pop(unit)
+    reopened = fixtures.control_for(project, tmp_path, transport, ['boot-1'])
+    result = reopened.refresh_application_preparation("portal")
+    assert result["state"] == "uncertain"
+    assert result["steps"][0]["outcome"] is None
+    assert result["steps"][0]["invocation_id"] is None
+    assert result["cleanup_pending"]
+    assert transport.attempts == 1
