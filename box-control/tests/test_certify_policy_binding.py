@@ -35,9 +35,18 @@ def fixture(tmp_path, monkeypatch, *, application="certify-manage", program="ren
 
 def _root_owned_file(monkeypatch):
     original = host_bindings.os.fstat
+    class RootOwned:
+        def __init__(self, real):
+            self.real = real
+
+        def __getattr__(self, name):
+            return 0 if name == 'st_uid' else getattr(self.real, name)
+
     def fstat(fd):
-        real = original(fd)
-        return SimpleNamespace(st_mode=real.st_mode, st_uid=0)
+        return RootOwned(original(fd))
+
+    # Mock only st_uid: tempfile/contextlib/os may require st_size and other
+    # fields while this process-global os.fstat monkeypatch is active.
     monkeypatch.setattr(host_bindings.os, "fstat", fstat)
 
 
