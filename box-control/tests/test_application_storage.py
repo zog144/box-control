@@ -365,6 +365,16 @@ class TimedOutIssuerStart(Transport):
         super().__init__()
         self.accepted = accepted
         self.attempts = 0
+        self.kills = []
+        self.stops = []
+
+    def kill(self, **kwargs):
+        self.kills.append((kwargs['unit_name'], kwargs['signal_number']))
+        return super().kill(**kwargs)
+
+    def stop(self, **kwargs):
+        self.stops.append(kwargs['unit_name'])
+        return super().stop(**kwargs)
 
     def start_service(self, **kwargs):
         from zog.box_control.errors import RootControlReplyTimeout
@@ -421,7 +431,7 @@ def test_preparation_start_reply_timeout_preserves_single_original_attempt(tmp_p
     )
     ready = control.refresh_application_preparation("portal")
     assert ready["state"] == "ready"
-    assert ready["steps"][0]["invocation_id"] == "inv-1"
+    assert ready["steps"][0]["invocation_id"] == "invocation-1"
     assert ready["steps"][0]["outcome"] == "success"
     assert transport.attempts == 1
 
