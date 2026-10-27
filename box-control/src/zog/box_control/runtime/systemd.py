@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Protocol
 from functools import wraps
 
-from ..errors import RuntimeOperationError, PersistenceError, RecoveryRequired
+from ..errors import (
+    RuntimeOperationError, PersistenceError, RecoveryRequired,
+    RootControlReplyTimeout, ServiceStartOutcomeUnknown,
+)
 from ..durability import ensure_directory
 from ..model import ApplicationRuntimeState, ApplicationSpec, ProgramSpec
 from .reference import (
@@ -718,11 +721,23 @@ class SystemdServiceRuntime:
                 # The transport may raise after systemd has accepted the start.
                 started_units.append(service.unit_name)
                 if service.unit_name not in resumed_units:
-                    self.transport.start_service(
-                        project_root=self.project.path,
-                        generation=generation,
-                        definition=service,
-                    )
+                    try:
+                        self.transport.start_service(
+                            project_root=self.project.path,
+                            generation=generation,
+                            definition=service,
+                        )
+                    except RootControlReplyTimeout as exc:
+                        # The original attempt was durably recorded before
+                        # transmission.  PID1 may only now be starting the
+                        # service.  Generic rollback would SIGTERM and unload
+                        # it before its InvocationID/result can be recovered.
+                        # Preserve STARTING + frozen identity for inspection;
+                        # never issue a second start from this exception.
+                        raise ServiceStartOutcomeUnknown(
+                            f"{service.unit_name}: original start outcome unknown; "
+                            "observe that runtime without replay"
+                        ) from exc
                 observation = self.transport.observe(
                     project_root=self.project.path,
                     unit_name=service.unit_name,
@@ -770,7 +785,10 @@ class SystemdServiceRuntime:
             if launched.state == ApplicationRuntimeState.TERMINATED:
                 launched = self.cleanup(launched, references=references, store=store)
             return launched
-        except PersistenceError:
+        except (PersistenceError, ServiceStartOutcomeUnknown):
+            # Neither storage-barrier failure nor an ambiguous PID1 start
+            # authorizes automatic unit teardown. A later exact-identity
+            # recovery must establish outcome before any stop/release.
             raise
         except Exception as exc:
             for unit_name in reversed(started_units):
