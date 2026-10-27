@@ -467,3 +467,16 @@ def test_recovered_invocation_and_journal_do_not_validate_killed_timeout_prepara
     assert result["steps"][0]["invocation_id"] is None
     assert result["cleanup_pending"]
     assert transport.attempts == 1
+
+    # Once the operator has verified the original failed start and empty
+    # cgroup, explicit abandonment records failure without false success.
+    abandoned = reopened.abandon_application_preparation("portal")
+    assert abandoned["state"] == "failed"
+    assert abandoned["steps"][0]["outcome"] == "abandoned-unknown"
+    assert abandoned["steps"][0]["invocation_id"] is None
+    assert abandoned["cleanup_pending"] is False
+    assert abandoned["storage_id"] == raw["storage_id"]
+    assert transport.attempts == 1
+    with pytest.raises(RuntimeOperationError, match="retry"):
+        reopened.prepare_application("portal", upgrade=True)
+    assert transport.attempts == 1
