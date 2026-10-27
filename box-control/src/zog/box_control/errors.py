@@ -35,6 +35,10 @@ class ProjectBusy(BoxControlError):
     """The project mutation lock was not acquired within the caller budget."""
 
 
+class ServiceStartOutcomeUnknown(RuntimeOperationError):
+    """A service start may have reached PID1; preserve its original runtime."""
+
+
 class RootControlReplyTimeout(RuntimeOperationError):
     """Request was sent; server outcome must be reconciled, not assumed failed."""
     def __init__(self, operation, elapsed_seconds):
