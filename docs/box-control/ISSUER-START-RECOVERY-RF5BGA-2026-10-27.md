@@ -27,7 +27,7 @@ Previous direct `SystemdServiceRuntime.launch`:
 
 **Fixed in source for future attempts only:** box-control now catches typed `RootControlReplyTimeout` at `start_service`, raises `ServiceStartOutcomeUnknown`, preserves the original STARTING runtime/boot/definition and preparation's `uncertain` state, and bypasses generic kill/stop/release. It neither retries nor declares success. A later *exact frozen* PID1 observation may save the original InvocationID if the same process terminates normally; absence/mismatch/reboot remains uncertain. Other genuine launch failures and storage-barrier failures retain their existing fail-closed behavior. Do not increase the client timeout blindly or replace installed source on the retained host based on source tests.
 
-root-control now emits protected diagnostic events `systemd-start-service-dispatched`, `-validated`, `-job-submitted` (elapsed preparation time), `-job-completed` / `-job-unconfirmed`, `-handler-finished`, and operation-specific `root-control-response-undelivered`. Only validated unit IDs, timing, and booleans are logged. These events are diagnostic, **not** durable terminal program evidence and not a changed controller RPC protocol.
+root-control now emits protected diagnostic events `systemd-start-service-dispatched`, `-validated`, `-job-dispatch-attempt` (elapsed preparation time; not proof of PID1 receipt), `-job-completed` / `-job-unconfirmed`, `-handler-finished`, and operation-specific `root-control-response-undelivered`. Only validated unit IDs, timing, and booleans are logged. These events are diagnostic, **not** durable terminal program evidence and not a changed controller RPC protocol.
 
 ## Supported procedure for this retained incident
 
