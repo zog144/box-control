@@ -420,3 +420,38 @@ def test_renewal_controller_results_are_secret_free_and_not_issuer_success(monke
     }
     assert "outcome" not in result
     assert "PRIVATE" not in str(result)
+
+
+@pytest.mark.parametrize("changed", [
+    {"status": "unknown", "program": "renew", "runtime_id": None},
+    {"status": "unknown", "program": None, "runtime_id": "RUNTIME1"},
+    {"status": "satisfied", "program": None, "runtime_id": "RUNTIME1"},
+    {"status": "satisfied", "program": "renew", "runtime_id": "../foreign"},
+    {"status": "satisfied", "program": "renew", "runtime_id": True},
+    {"status": "satisfied", "program": "renew", "runtime_id": 11},
+    {"status": "pending", "program": "shell", "runtime_id": "RUNTIME1"},
+    {"status": "satisfied", "program": "renew", "runtime_id": "RUNTIME1",
+     "error": "private-subprocess-stderr"},
+])
+def test_selected_renewal_result_requires_exact_controller_schema(monkeypatch, changed):
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock", controller_uid=200002)
+    response = {
+        "request_id": "SIGNED-ID-123", "program": "renew",
+        "status": "satisfied", "runtime_id": "RUNTIME1",
+    }
+    response.update(changed)
+    monkeypatch.setattr(client, "_call", lambda operation, **kw: response)
+    with pytest.raises(RoleBrokerError):
+        client.application_request_result("SIGNED-ID-123")
+
+
+def test_selected_renewal_result_unknown_only_when_no_controller_identity(monkeypatch):
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock", controller_uid=200002)
+    unknown = {"request_id": "SIGNED-ID-123", "status": "unknown",
+               "program": None, "runtime_id": None}
+    monkeypatch.setattr(client, "_call", lambda operation, **kw: unknown)
+    assert client.application_request_result("SIGNED-ID-123") == unknown
+    # Pending can legitimately lack a runtime before controller launch commits.
+    pending = dict(unknown, status="pending", program="renew")
+    monkeypatch.setattr(client, "_call", lambda operation, **kw: pending)
+    assert client.application_request_result("SIGNED-ID-123") == pending
