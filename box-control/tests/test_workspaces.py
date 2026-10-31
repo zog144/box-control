@@ -341,7 +341,7 @@ def test_first_workspace_cross_account_client_cannot_share_xauthority(tmp_path):
     desktop(control, workspace)
     declaration = control.project.application_dir / 'terminal' / 'application.py'
     original = declaration.read_text()
-    declaration.write_text(original.replace('program(name="main", command=', 'program(name="main", user="root", command='))
+    declaration.write_text(original.replace('program(name="main", command=', 'program(name="main", user="other-desktop-client", command='))
     try:
         with pytest.raises(WorkspaceError, match='same desktop host account'):
             control.launch_application('terminal', workspace_id=workspace)
