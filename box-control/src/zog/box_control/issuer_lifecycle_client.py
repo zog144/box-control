@@ -21,8 +21,15 @@ class IssuerLifecycleClient(RoleBrokerClient):
             raise RoleBrokerError("issuer lifecycle selection is not authorized",
                                   code="scope-rejected")
         result = self._call("start", request_id=request_id, program=program_name)
-        if result.get("program") != program_name:
-            raise RoleBrokerError("issuer selection mismatch", code="scope-rejected")
+        from .role_broker import _REQUEST, _RUNTIME
+        if (type(request_id) is not str or _REQUEST.fullmatch(request_id) is None
+                or type(result) is not dict
+                or result.get("request_id") != request_id
+                or result.get("program") != program_name
+                or type(result.get("runtime_id")) is not str
+                or _RUNTIME.fullmatch(result["runtime_id"]) is None):
+            raise RoleBrokerError("issuer start identity or selection mismatch",
+                                  code="scope-rejected")
         return SimpleNamespace(
             application=self.application, runtime_id=result["runtime_id"],
             selected_program=program_name,
@@ -37,6 +44,9 @@ class IssuerLifecycleClient(RoleBrokerClient):
         result = self._call("result", request_id=request_id)
         program = result.get("program") if type(result) is dict else None
         if (type(result) is not dict or result.get("request_id") != request_id
+                or result.get("status") not in {
+                    "unknown", "pending", "satisfied", "failed", "abandoned", "cancelled"
+                }
                 or (program is not None
                     and (type(program) is not str
                          or program not in {"renew", "inspect", "stage"}))):
