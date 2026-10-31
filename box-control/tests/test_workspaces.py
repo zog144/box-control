@@ -269,3 +269,41 @@ def test_pre_workspace_operation_schema_recovers_with_default_binding(tmp_path, 
     monkeypatch.setattr(SystemdServiceRuntime, 'launch', original)
     assert control.launch_application('desktop',request_id=request).workspace_binding is None
     assert len(transport.started) == 1
+
+
+def test_desktop_access_probes_exact_runtime_and_fails_closed(tmp_path):
+    project, control, transport, workspace, _ = setup(tmp_path)
+    server = desktop(control, workspace)
+    original = transport.workspace_call
+    calls = []
+    def recording(operation, *, project_root, binding, **kwargs):
+        if operation == 'verify':
+            calls.append(dict(binding))
+            assert binding['role'] == 'client'
+            assert binding['desktop_runtime_id'] == server.runtime_id
+        return original(operation, project_root=project_root, binding=binding, **kwargs)
+    transport.workspace_call = recording
+    access = control.workspace_desktop_access(workspace)
+    assert access['desktop_runtime_id'] == server.runtime_id
+    assert access['ready'] is True and len(calls) == 1
+    unit = server.programs[0].unit_name
+    transport.units[unit] = replace(transport.units[unit], active_state='inactive')
+    with pytest.raises(WorkspaceError, match='desktop not ready'):
+        control.workspace_desktop_access(workspace)
+    assert len(transport.started) == 1
+
+
+def test_desktop_access_never_substitutes_other_workspace(tmp_path):
+    _, control, transport, workspace, _ = setup(tmp_path)
+    other = str(uuid4())
+    control.register_workspace(other, 2)
+    first = desktop(control, workspace)
+    second = desktop(control, other)
+    for selected, expected in ((workspace, first), (other, second)):
+        access = control.workspace_desktop_access(selected)
+        assert access['workspace_id'] == selected
+        assert access['desktop_runtime_id'] == expected.runtime_id
+    control.terminate_application_runtime(first.runtime_id)
+    with pytest.raises(WorkspaceError, match='desktop'):
+        control.workspace_desktop_access(workspace)
+    assert control.workspace_desktop_access(other)['desktop_runtime_id'] == second.runtime_id
