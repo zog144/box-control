@@ -59,7 +59,12 @@ class IssuerLifecycleBroker:
         if (outcome.application != _APP or outcome.program_name not in _ALLOWED
                 or getattr(outcome.operation, "value", outcome.operation) != "launch"):
             raise RoleBrokerError("saved issuer request is outside broker scope", code="scope-rejected")
-        return {"request_id": request_id, "status": outcome.status.value,
+        status = getattr(outcome.status, "value", outcome.status)
+        if status not in {"pending", "satisfied", "failed", "abandoned", "cancelled"}:
+            raise RoleBrokerError("issuer request status is unsupported", code="scope-rejected")
+        if outcome.runtime_id is not None:
+            _text(outcome.runtime_id, _RUNTIME, "runtime identity")
+        return {"request_id": request_id, "status": status,
                 "program": outcome.program_name, "runtime_id": outcome.runtime_id}
 
     def _runtime(self, runtime_id):
@@ -118,7 +123,8 @@ class IssuerLifecycleBroker:
             runtime = self.control.launch_application(
                 _APP, request_id=request["request_id"], program_name=program,
             )
-            if (runtime.application != _APP or [p.program for p in runtime.programs] != [program]):
+            if (runtime.application != _APP or runtime.request_id != request["request_id"]
+                    or [p.program for p in runtime.programs] != [program]):
                 raise RoleBrokerError("unexpected issuer runtime", code="scope-rejected")
             return {"request_id": request["request_id"], "program": program,
                     "runtime_id": runtime.runtime_id}
