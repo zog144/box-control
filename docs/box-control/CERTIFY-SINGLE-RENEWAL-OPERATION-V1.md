@@ -1,6 +1,6 @@
 # Selected certificate renewal: exact operation and evidence v1
 
-**Producer contract:** [certify-manage single-operation renewal](https://github.com/zog144/certify-manage/blob/regular/single-renewal-contract-20261031/docs/single-operation-renewal-v1.md).
+**Producer contract:** [certify-manage single-operation renewal](https://github.com/zog144/certify-manage/blob/c8760c71d5af297e2f592c891805fc51f803ea64/docs/single-renewal-operation-v1.md).
 **Owners:** box-control/root-control selected-program admission and recovery,
 certify-manage issuer verification, host-deploy caller scheduling and delivery.
 
