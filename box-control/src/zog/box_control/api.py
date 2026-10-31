@@ -246,7 +246,8 @@ class BoxControl:
                           and r.state.value == 'running' and r.workspace_binding['incarnation'] == raw['incarnation']]
             if len(candidates) != 1:
                 raise WorkspaceError('desktop-not-ready', 'workspace has no unique running desktop')
-            binding = dict(candidates[0].workspace_binding, role='client')
+            binding = dict(candidates[0].workspace_binding, role='client',
+                           desktop_runtime_id=candidates[0].runtime_id)
         # Remote probes never hold the read-only snapshot lock.
         info = self.systemd_transport.workspace_call('verify', project_root=self.project.path, binding=binding)
         return dict(schema=VERSION, workspace_id=workspace_id, desktop_runtime_id=binding['desktop_runtime_id'],
