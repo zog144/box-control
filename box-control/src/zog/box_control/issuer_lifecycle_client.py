@@ -38,18 +38,28 @@ class IssuerLifecycleClient(RoleBrokerClient):
     def application_request_result(self, request_id):
         # The durable issuer request identity is selected by the caller's
         # protected operation journal, not by a returned broker field.
-        from .role_broker import _REQUEST
+        from .role_broker import _REQUEST, _RUNTIME
         if type(request_id) is not str or _REQUEST.fullmatch(request_id) is None:
             raise RoleBrokerError("invalid issuer request identity", code="scope-rejected")
         result = self._call("result", request_id=request_id)
-        program = result.get("program") if type(result) is dict else None
-        if (type(result) is not dict or result.get("request_id") != request_id
-                or result.get("status") not in {
+        if (type(result) is not dict
+                or set(result) != {"request_id", "status", "program", "runtime_id"}
+                or result["request_id"] != request_id
+                or type(result["status"]) is not str
+                or result["status"] not in {
                     "unknown", "pending", "satisfied", "failed", "abandoned", "cancelled"
-                }
-                or (program is not None
-                    and (type(program) is not str
-                         or program not in {"renew", "inspect", "stage"}))):
+                }):
+            raise RoleBrokerError("issuer result identity or selection mismatch",
+                                  code="scope-rejected")
+        if result["status"] == "unknown":
+            if result["program"] is not None or result["runtime_id"] is not None:
+                raise RoleBrokerError("unknown issuer result carries runtime evidence",
+                                      code="scope-rejected")
+        elif (type(result["program"]) is not str
+                or result["program"] not in {"renew", "inspect", "stage"}
+                or (result["runtime_id"] is not None
+                    and (type(result["runtime_id"]) is not str
+                         or _RUNTIME.fullmatch(result["runtime_id"]) is None))):
             raise RoleBrokerError("issuer result identity or selection mismatch",
                                   code="scope-rejected")
         return result
