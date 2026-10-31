@@ -286,7 +286,8 @@ def test_desktop_access_probes_exact_runtime_and_fails_closed(tmp_path):
     access = control.workspace_desktop_access(workspace)
     assert access['desktop_runtime_id'] == server.runtime_id
     assert access['ready'] is True and len(calls) == 1
-    transport.units[server.programs[0].unit_name].active = False
+    unit = server.programs[0].unit_name
+    transport.units[unit] = replace(transport.units[unit], active_state='inactive')
     with pytest.raises(WorkspaceError, match='desktop not ready'):
         control.workspace_desktop_access(workspace)
     assert len(transport.started) == 1
