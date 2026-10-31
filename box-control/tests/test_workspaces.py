@@ -269,3 +269,119 @@ def test_pre_workspace_operation_schema_recovers_with_default_binding(tmp_path, 
     monkeypatch.setattr(SystemdServiceRuntime, 'launch', original)
     assert control.launch_application('desktop',request_id=request).workspace_binding is None
     assert len(transport.started) == 1
+
+
+def test_first_workspace_shares_controller_x11_cookie_mounts_without_client_writes(tmp_path):
+    """Synthetic systemd properties only; no X server, desktop or VNC started."""
+    _, control, transport, workspace, _ = setup(tmp_path)
+    server = desktop(control, workspace)
+    terminal = control.launch_application('terminal', workspace_id=workspace)
+    desktop_binding, client_binding = server.workspace_binding, terminal.workspace_binding
+    for field in ('workspace_id', 'number', 'revision', 'incarnation', 'boot_id',
+                  'namespace_path', 'namespace_device', 'namespace_inode',
+                  'x11_directory', 'access_directory', 'vnc_endpoint'):
+        assert client_binding[field] == desktop_binding[field]
+    assert client_binding['role'] == 'client'
+    assert client_binding['desktop_runtime_id'] == server.runtime_id
+    assert desktop_binding['role'] == 'desktop'
+    desktop_props = dict(server.programs[0].expected_properties)
+    client_props = dict(terminal.programs[0].expected_properties)
+    assert desktop_props['NetworkNamespacePath'] == client_props['NetworkNamespacePath'] == '/proc/1/ns/net'
+    for source, target in (
+        (desktop_binding['x11_directory'], '/tmp/.X11-unix'),
+        (desktop_binding['access_directory'], '/run/zog-workspace'),
+    ):
+        assert any(entry[0] == source and entry[1] == target
+                   for entry in desktop_props['BindPaths'])
+        assert any(entry[0] == source and entry[1] == target
+                   for entry in client_props['BindReadOnlyPaths'])
+        assert not any(entry[1] == target for entry in client_props['BindPaths'])
+    assert 'DISPLAY=' + client_binding['display'] in client_props['Environment']
+    assert 'XAUTHORITY=/run/zog-workspace/Xauthority' in client_props['Environment']
+    assert len(transport.started) == 2
+
+
+@pytest.mark.parametrize('denial', [
+    ('x11-authorization-failed', 'desktop rejected controller X11 authorization'),
+    ('desktop-not-ready', 'desktop X11 socket missing'),
+    ('vnc-not-ready', 'private desktop RFB banner missing'),
+    ('namespace-changed', 'desktop network namespace changed'),
+])
+def test_first_workspace_client_readiness_failure_preserves_exact_desktop_binding(
+        tmp_path, denial):
+    """An unavailable desktop is never replaced or bypassed by launching a client."""
+    _, control, transport, workspace, _ = setup(tmp_path)
+    server = desktop(control, workspace)
+    original = transport.workspace_call
+    original_binding = dict(server.workspace_binding)
+    starts_before = tuple(transport.started)
+
+    def refused(operation, *, project_root, binding, **kwargs):
+        if operation == 'verify' and binding['role'] == 'client':
+            raise WorkspaceError(*denial)
+        return original(operation, project_root=project_root, binding=binding, **kwargs)
+
+    transport.workspace_call = refused
+    with pytest.raises(WorkspaceError, match=denial[1]):
+        control.launch_application('terminal', workspace_id=workspace)
+    assert tuple(transport.started) == starts_before
+    assert control.application_runtime(server.runtime_id).workspace_binding == original_binding
+    assert control.workspace_membership(workspace)['total'] >= 1
+
+    transport.workspace_call = original
+    terminal = control.launch_application('terminal', workspace_id=workspace)
+    assert len(transport.started) == len(starts_before) + 1
+    assert terminal.workspace_binding['incarnation'] == original_binding['incarnation']
+    assert terminal.workspace_binding['desktop_runtime_id'] == server.runtime_id
+    assert control.application_runtime(server.runtime_id).workspace_binding == original_binding
+
+
+def test_first_workspace_cross_account_client_cannot_share_xauthority(tmp_path):
+    _, control, transport, workspace, _ = setup(tmp_path)
+    desktop(control, workspace)
+    declaration = control.project.application_dir / 'terminal' / 'application.py'
+    original = declaration.read_text()
+    declaration.write_text(original.replace('program(name="main", command=', 'program(name="main", user="other-desktop-client", command='))
+    try:
+        with pytest.raises(WorkspaceError, match='desktop host account and group'):
+            control.launch_application('terminal', workspace_id=workspace)
+    finally:
+        declaration.write_text(original)
+    assert len(transport.started) == 1
+
+def test_desktop_access_probes_exact_runtime_and_fails_closed(tmp_path):
+    project, control, transport, workspace, _ = setup(tmp_path)
+    server = desktop(control, workspace)
+    original = transport.workspace_call
+    calls = []
+    def recording(operation, *, project_root, binding, **kwargs):
+        if operation == 'verify':
+            calls.append(dict(binding))
+            assert binding['role'] == 'client'
+            assert binding['desktop_runtime_id'] == server.runtime_id
+        return original(operation, project_root=project_root, binding=binding, **kwargs)
+    transport.workspace_call = recording
+    access = control.workspace_desktop_access(workspace)
+    assert access['desktop_runtime_id'] == server.runtime_id
+    assert access['ready'] is True and len(calls) == 1
+    unit = server.programs[0].unit_name
+    transport.units[unit] = replace(transport.units[unit], active_state='inactive')
+    with pytest.raises(WorkspaceError, match='desktop not ready'):
+        control.workspace_desktop_access(workspace)
+    assert len(transport.started) == 1
+
+
+def test_desktop_access_never_substitutes_other_workspace(tmp_path):
+    _, control, transport, workspace, _ = setup(tmp_path)
+    other = str(uuid4())
+    control.register_workspace(other, 2)
+    first = desktop(control, workspace)
+    second = desktop(control, other)
+    for selected, expected in ((workspace, first), (other, second)):
+        access = control.workspace_desktop_access(selected)
+        assert access['workspace_id'] == selected
+        assert access['desktop_runtime_id'] == expected.runtime_id
+    control.terminate_application_runtime(first.runtime_id)
+    with pytest.raises(WorkspaceError, match='desktop'):
+        control.workspace_desktop_access(workspace)
+    assert control.workspace_desktop_access(other)['desktop_runtime_id'] == second.runtime_id

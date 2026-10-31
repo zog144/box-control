@@ -102,7 +102,8 @@ jobs:
             box-control/tests/test_durability.py \
             box-control/tests/test_host_gateway.py \
             box-control/tests/test_retention.py \
-            box-control/tests/test_launch_cancellation.py
+            box-control/tests/test_launch_cancellation.py \
+            box-control/tests/test_workspaces.py
       - name: Require all four symbolic identity cases and zero skips
         if: always()
         run: |
