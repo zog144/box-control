@@ -46,6 +46,33 @@ production ACME renewal.
 
 **Source tests:** `test_issuer_lifecycle_broker.py`,
 `test_selected_program_execution.py`, `test_selected_program_recovery.py`,
-and certify-manage `test_single_operation_renewal.py`. Native systemd,
+and certify-manage `tests/test_renewal_operation_contract.py`. Native systemd,
 real Certbot/Cloudflare, reboot, HTTPS publication and TLS verification remain
 independent acceptance gates.
+
+## Consumer integration hold (source review, 2026-10-31)
+
+The producer source contract above is canonical, but **host-deploy's**
+`SelectedIssuerController` currently instantiates
+`IssuerLifecycleClient(socket_path)` without an independently pinned
+`controller_uid`. The wire client only checks the server's `SO_PEERCRED`
+UID when that fixed UID is explicitly provided. This is not approved
+authentication of the selected broker for credential-related mutations.
+Host-deploy must accept a root-owned, independently installed expected
+controller UID, verify it at every RPC, and source-test an impostor peer
+before native activation. The broker's restricted requester socket
+permissions do not remove the need for the caller to authenticate its peer.
+
+Moreover, host-deploy's `certificate_renewal_timer._require_approved_native_inspection`
+still deliberately denies `selected-broker`; the separately
+implemented `certificate_selected_inspection` coordinator has not yet
+replaced the older issuer socket/observer inspection path in that timer.
+Do not retire this fail-closed gate until one exact selected `inspect`
+operation is independently accepted with root-control's invocation-bound
+result, storage/grant/policy identity, original renewal correlation and
+15-minute freshness. A controller `satisfied` state is never certificate
+or HTTPS readiness.
+
+These are cross-owner host-deploy integration dependencies, not claims
+that box-control source tests or a successful Certbot exit establish
+native acceptance. Existing direct-selected-broker policy stays disabled.
