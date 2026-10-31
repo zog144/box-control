@@ -30,6 +30,7 @@ class Control:
         self.started.append((application, request_id, program_name))
         return SimpleNamespace(
             application=application, runtime_id="RUNTIME1",
+            request_id=request_id,
             programs=(SimpleNamespace(program=program_name),),
         )
 
@@ -347,3 +348,110 @@ def test_broker_returns_request_bound_inspect_and_rejects_unselected_program(mon
     ctl.request_status["SIGNED-ID-INSPECT"].program_name = "shell"
     with pytest.raises(RoleBrokerError, match="scope"):
         b.handle(request("result", request_id="SIGNED-ID-INSPECT"))
+
+
+def test_renewal_start_requires_runtime_bound_to_original_request(monkeypatch):
+    b, ctl = broker(monkeypatch)
+    def foreign(_application, *, request_id, program_name):
+        return SimpleNamespace(
+            application="certify-manage", request_id="OTHER-REQUEST",
+            runtime_id="RUNTIME1",
+            programs=(SimpleNamespace(program=program_name),),
+        )
+    ctl.launch_application = foreign
+    with pytest.raises(RoleBrokerError, match="unexpected issuer runtime"):
+        b.handle(request("start", request_id="SIGNED-ID-123", program="renew"))
+
+
+@pytest.mark.parametrize("bad_status", ["ready", "renewed", "", None, True])
+def test_broker_rejects_invalid_controller_result_states(monkeypatch, bad_status):
+    b, ctl = broker(monkeypatch)
+    ctl.request_status["SIGNED-ID-123"] = SimpleNamespace(
+        application="certify-manage", program_name="renew",
+        operation=SimpleNamespace(value="launch"),
+        status=SimpleNamespace(value=bad_status),
+        runtime_id="RUNTIME1", error="SECRET=must-not-leak",
+    )
+    with pytest.raises(RoleBrokerError, match="status is unsupported"):
+        b.handle(request("result", request_id="SIGNED-ID-123"))
+
+
+@pytest.mark.parametrize("mutation", ["wrong-request", "wrong-program", "wrong-runtime", "missing-runtime"])
+def test_client_rejects_misbound_selected_renewal_start(monkeypatch, mutation):
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock", controller_uid=200002)
+    response = {
+        "request_id": "SIGNED-ID-123", "program": "renew",
+        "runtime_id": "RUNTIME1",
+    }
+    if mutation == "wrong-request": response["request_id"] = "SIGNED-ID-OTHER"
+    if mutation == "wrong-program": response["program"] = "issue"
+    if mutation == "wrong-runtime": response["runtime_id"] = "../other"
+    if mutation == "missing-runtime": response["runtime_id"] = None
+    monkeypatch.setattr(client, "_call", lambda op, **kw: response)
+    with pytest.raises(RoleBrokerError, match="identity or selection"):
+        client.launch_application("certify-manage", request_id="SIGNED-ID-123",
+                                  program_name="renew")
+
+
+@pytest.mark.parametrize("bad_status", ["renewed", "ready", "uncertain", None, True])
+def test_client_rejects_issuer_result_as_if_it_were_controller_status(monkeypatch, bad_status):
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock", controller_uid=200002)
+    monkeypatch.setattr(client, "_call", lambda op, **kw: {
+        "request_id": kw["request_id"], "program": "renew",
+        "runtime_id": "RUNTIME1", "status": bad_status,
+    })
+    with pytest.raises(RoleBrokerError, match="identity or selection"):
+        client.application_request_result("SIGNED-ID-123")
+
+
+@pytest.mark.parametrize("status", ["pending", "failed", "abandoned", "cancelled", "satisfied"])
+def test_renewal_controller_results_are_secret_free_and_not_issuer_success(monkeypatch, status):
+    b, ctl = broker(monkeypatch)
+    ctl.request_status["SIGNED-ID-123"] = SimpleNamespace(
+        application="certify-manage", program_name="renew",
+        operation=SimpleNamespace(value="launch"),
+        status=SimpleNamespace(value=status), runtime_id="RUNTIME1",
+        error="PRIVATE=never-report",
+    )
+    result = b.handle(request("result", request_id="SIGNED-ID-123"))
+    assert result == {
+        "request_id": "SIGNED-ID-123", "status": status,
+        "program": "renew", "runtime_id": "RUNTIME1",
+    }
+    assert "outcome" not in result
+    assert "PRIVATE" not in str(result)
+
+
+@pytest.mark.parametrize("changed", [
+    {"status": "unknown", "program": "renew", "runtime_id": None},
+    {"status": "unknown", "program": None, "runtime_id": "RUNTIME1"},
+    {"status": "satisfied", "program": None, "runtime_id": "RUNTIME1"},
+    {"status": "satisfied", "program": "renew", "runtime_id": "../foreign"},
+    {"status": "satisfied", "program": "renew", "runtime_id": True},
+    {"status": "satisfied", "program": "renew", "runtime_id": 11},
+    {"status": "pending", "program": "shell", "runtime_id": "RUNTIME1"},
+    {"status": "satisfied", "program": "renew", "runtime_id": "RUNTIME1",
+     "error": "private-subprocess-stderr"},
+])
+def test_selected_renewal_result_requires_exact_controller_schema(monkeypatch, changed):
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock", controller_uid=200002)
+    response = {
+        "request_id": "SIGNED-ID-123", "program": "renew",
+        "status": "satisfied", "runtime_id": "RUNTIME1",
+    }
+    response.update(changed)
+    monkeypatch.setattr(client, "_call", lambda operation, **kw: response)
+    with pytest.raises(RoleBrokerError):
+        client.application_request_result("SIGNED-ID-123")
+
+
+def test_selected_renewal_result_unknown_only_when_no_controller_identity(monkeypatch):
+    client = IssuerLifecycleClient("/run/zog/issuer-lifecycle.sock", controller_uid=200002)
+    unknown = {"request_id": "SIGNED-ID-123", "status": "unknown",
+               "program": None, "runtime_id": None}
+    monkeypatch.setattr(client, "_call", lambda operation, **kw: unknown)
+    assert client.application_request_result("SIGNED-ID-123") == unknown
+    # Pending can legitimately lack a runtime before controller launch commits.
+    pending = dict(unknown, status="pending", program="renew")
+    monkeypatch.setattr(client, "_call", lambda operation, **kw: pending)
+    assert client.application_request_result("SIGNED-ID-123") == pending
