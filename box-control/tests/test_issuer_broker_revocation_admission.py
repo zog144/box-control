@@ -4,6 +4,7 @@ Source-only: never connects to the protected socket, executes Certbot, or
 publishes to /etc/STATE. The root-only fixture uses a temporary directory.
 """
 import json
+import hashlib
 import os
 import stat
 from pathlib import Path
@@ -30,6 +31,29 @@ def projection():
         "storage_id": "c" * 32, "grant_id": "d" * 32,
         "box_control_revision": "e" * 40,
         "consumer_binding_sha256": "sha256:" + "f" * 64,
+    }
+
+
+def canonical(obj):
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True).encode("ascii")
+
+
+def commit_for_projection(blob):
+    row = projection()
+    return {
+        "schema": authority.COMMIT_SCHEMA,
+        "projection_sha256": hashlib.sha256(blob).hexdigest(),
+        "install_receipt_sha256": "b" * 64,
+        "host_id": row["host_id"], "installation_id": row["installation_id"],
+        "state_volume_id": row["state_volume_id"],
+        "certificate_id": row["certificate_id"],
+        "policy_sha256": row["policy_sha256"],
+        "consumer_binding_sha256": row["consumer_binding_sha256"],
+        "owner_revision": 4,
+        "owner_operation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "host_deploy_source_commit": "a" * 40,
+        "box_control_revision": row["box_control_revision"],
     }
 
 
@@ -148,8 +172,12 @@ def test_root_file_revocation_pending_tampering_and_read_race(tmp_path, monkeypa
     root = tmp_path / "protected"
     root.mkdir(mode=0o700)
     pin = root / Path(authority.ROOT_PATH).name
-    pin.write_text(json.dumps(projection(), sort_keys=True))
+    blob = canonical(projection())
+    pin.write_bytes(blob)
     pin.chmod(0o444)
+    commit = root / authority.COMMIT_NAME
+    commit.write_bytes(canonical(commit_for_projection(blob)))
+    commit.chmod(0o444)
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         assert authority._read_authority_in_parent(fd) == projection()
