@@ -123,7 +123,7 @@ jobs:
         env:
           AWS_EC2_METADATA_DISABLED: "true"
         run: |
-          PYTHONPATH="$PWD/host-deploy/src:$PWD/companions/zog/src" \
+          PYTHONPATH="$PWD/box-control/tests:$PWD/companions/zog/src" \
             python -m pytest -q -ra \
             box-control/tests/issuer_broker_cross_owner_candidate.py
 
