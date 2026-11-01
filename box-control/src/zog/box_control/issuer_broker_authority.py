@@ -73,7 +73,17 @@ def _root_projection():
             if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0
                     or metadata.st_mode & 0o022):
                 _deny()
-        _no_revocation(directory)
+        return _read_authority_in_parent(directory)
+    except OSError:
+        _deny()
+    finally:
+        os.close(directory)
+
+
+def _read_authority_in_parent(directory):
+    """Protected fixed-parent fd; used by ephemeral root-owned source fixtures."""
+    _no_revocation(directory)
+    try:
         leaf = os.open(
             Path(ROOT_PATH).name, os.O_RDONLY | os.O_NOFOLLOW |
             os.O_CLOEXEC, dir_fd=directory,
@@ -92,8 +102,6 @@ def _root_projection():
         _no_revocation(directory)
     except OSError:
         _deny()
-    finally:
-        os.close(directory)
 
     def unique(pairs):
         value = {}
