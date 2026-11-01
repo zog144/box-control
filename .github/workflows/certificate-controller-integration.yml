@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, unstable]
   push:
-    branches: [unstable]
+    branches: [unstable, regular/issuer-broker-revocation-admission-20261101]
     paths:
       - 'box-control/src/zog/box_control/application_storage.py'
       - 'box-control/src/zog/box_control/host_bindings.py'
@@ -12,6 +12,8 @@ on:
       - 'box-control/tests/test_issuer_observer.py'
       - 'box-control/tests/test_issuer_lifecycle_broker.py'
       - 'box-control/src/zog/box_control/issuer_lifecycle_broker.py'
+      - 'box-control/src/zog/box_control/issuer_broker_authority.py'
+      - 'box-control/tests/test_issuer_broker_revocation_admission.py'
       - 'box-control/src/zog/box_control/issuer_lifecycle_client.py'
       - 'box-control/src/zog/box_control/issuer_observer.py'
       - 'box-control/src/zog/box_control/issuer_observer_client.py'
@@ -47,6 +49,13 @@ jobs:
           repository: zog144/root-control
           ref: 8a9583924109ef324eb80071953151c8c7e20b33
           path: root-control
+      - name: Check out exact selected host-deploy candidate for a source-only admission race
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/host-deploy
+          ref: b4e723abab3dadcf238b0552ee4d5f108e6a6d95
+          path: host-deploy
+          persist-credentials: false
       - name: Check out known compatible public image-build source
         uses: actions/checkout@v4
         with:
@@ -59,6 +68,7 @@ jobs:
       - name: Verify immutable companion checkout pins
         run: |
           test "$(git -C root-control rev-parse HEAD)" = "8a9583924109ef324eb80071953151c8c7e20b33"
+          test "$(git -C host-deploy rev-parse HEAD)" = "b4e723abab3dadcf238b0552ee4d5f108e6a6d95"
           test "$(git -C companions/zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
       - name: Install test dependencies
         run: python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
@@ -78,6 +88,7 @@ jobs:
             box-control/tests/test_certify_policy_binding.py \
             box-control/tests/test_issuer_observer.py \
             box-control/tests/test_issuer_lifecycle_broker.py \
+            box-control/tests/test_issuer_broker_revocation_admission.py \
             box-control/tests/test_certify_application_profile.py \
             box-control/tests/test_selected_program_execution.py \
             box-control/tests/test_selected_program_recovery.py \
@@ -89,3 +100,30 @@ jobs:
             root-control/tests/test_issuer_observation.py \
             root-control/tests/test_issuer_credentials.py \
             root-control/tests/test_issuer_station_transfer.py
+
+      - name: Root-owned ephemeral authority and revocation race check (no native Host)
+        env:
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          sudo -E env PYTHONPATH="$PWD/companions/zog/src" "$(command -v python)" \
+            -m pytest -q -rs \
+            box-control/tests/test_issuer_broker_revocation_admission.py \
+            -k test_root_file_revocation_pending_tampering_and_read_race
+      - name: Overlay exact pinned host-deploy selected controller into isolated namespace
+        run: |
+          mkdir -p companions/zog/src/zog/host_deploy
+          cp -a host-deploy/src/zog/host_deploy/. companions/zog/src/zog/host_deploy/
+          cmp host-deploy/src/zog/host_deploy/certificate_issuer_lifecycle.py \
+              companions/zog/src/zog/host_deploy/certificate_issuer_lifecycle.py
+          python - <<'PY'
+          import zog.box_control.issuer_lifecycle_broker
+          import zog.host_deploy.certificate_issuer_lifecycle
+          PY
+      - name: 'Cross-owner checked heads - client verification then server revocation'
+        env:
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          PYTHONPATH="$PWD/box-control/tests:$PWD/companions/zog/src" \
+            python -m pytest -q -ra \
+            box-control/tests/issuer_broker_cross_owner_candidate.py
+

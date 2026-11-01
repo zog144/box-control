@@ -54,6 +54,7 @@ def broker(monkeypatch):
     ctl = Control()
     return IssuerLifecycleBroker(
         ctl, authorized_uid=99001, software_view="sha256:" + "b" * 64,
+        authority_guard=lambda *, authorized_uid: authorized_uid == 99001,
     ), ctl
 
 
