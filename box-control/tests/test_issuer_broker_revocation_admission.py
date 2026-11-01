@@ -212,3 +212,85 @@ def test_root_file_revocation_pending_tampering_and_read_race(tmp_path, monkeypa
             authority._read_authority_in_parent(fd)
     finally:
         os.close(fd)
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="ephemeral root-owned source fixture")
+def test_installation_commit_is_required_and_bound_before_any_broker_admission(tmp_path):
+    root = tmp_path / "protected"
+    root.mkdir(mode=0o700)
+    pin = root / Path(authority.ROOT_PATH).name
+    blob = canonical(projection())
+    pin.write_bytes(blob)
+    pin.chmod(0o444)
+    commit = root / authority.COMMIT_NAME
+    content = canonical(commit_for_projection(blob))
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        # Crash after projection, before receipt+commit publication.
+        with pytest.raises(RoleBrokerError):
+            authority._read_authority_in_parent(fd)
+        commit.write_bytes(content)
+        commit.chmod(0o444)
+        assert authority._read_authority_in_parent(fd) == projection()
+        # Pending marker means no completed installation regardless of final.
+        pending = root / (".pending." + authority.COMMIT_NAME)
+        pending.write_bytes(b"not-yet-published")
+        with pytest.raises(RoleBrokerError):
+            authority._read_authority_in_parent(fd)
+        pending.unlink()
+        # Old/different original receipt or projection cannot be substituted.
+        for change in (
+            {"projection_sha256": "a" * 64},
+            {"install_receipt_sha256": "../private"},
+            {"owner_revision": 0},
+            {"owner_operation_id": "../foreign"},
+            {"box_control_revision": "d" * 40},
+            {"host_deploy_source_commit": True},
+        ):
+            commit.chmod(0o644)
+            commit.write_bytes(canonical({**commit_for_projection(blob), **change}))
+            commit.chmod(0o444)
+            with pytest.raises(RoleBrokerError):
+                authority._read_authority_in_parent(fd)
+        commit.chmod(0o644)
+        commit.write_bytes(content)
+        commit.chmod(0o444)
+        assert authority._read_authority_in_parent(fd) == projection()
+        commit.unlink()
+        commit.symlink_to("/etc/passwd")
+        with pytest.raises(RoleBrokerError):
+            authority._read_authority_in_parent(fd)
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="ephemeral root-owned source fixture")
+def test_commit_replacement_during_projection_read_denies(tmp_path, monkeypatch):
+    root = tmp_path / "protected"
+    root.mkdir(mode=0o700)
+    blob = canonical(projection())
+    pin = root / Path(authority.ROOT_PATH).name
+    pin.write_bytes(blob)
+    pin.chmod(0o444)
+    commit = root / authority.COMMIT_NAME
+    content = canonical(commit_for_projection(blob))
+    commit.write_bytes(content)
+    commit.chmod(0o444)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        original = authority._read_commit
+        calls = [0]
+        def replaced(parent):
+            calls[0] += 1
+            if calls[0] == 2:
+                commit.unlink()
+                commit.write_bytes(content)
+                commit.chmod(0o444)
+            return original(parent)
+        with monkeypatch.context() as p:
+            p.setattr(authority, "_read_commit", replaced)
+            with pytest.raises(RoleBrokerError):
+                authority._read_authority_in_parent(fd)
+        assert calls[0] == 2
+    finally:
+        os.close(fd)
