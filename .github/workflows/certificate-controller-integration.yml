@@ -109,7 +109,7 @@ jobs:
             -m pytest -q -rs \
             box-control/tests/test_issuer_broker_revocation_admission.py \
             -k test_root_file_revocation_pending_tampering_and_read_race
-      - name: Cross-owner checked heads: client verification then server revocation
+      - name: 'Cross-owner checked heads - client verification then server revocation'
         env:
           AWS_EC2_METADATA_DISABLED: "true"
         run: |
