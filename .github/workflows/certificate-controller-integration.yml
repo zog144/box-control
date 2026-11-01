@@ -109,6 +109,16 @@ jobs:
             -m pytest -q -rs \
             box-control/tests/test_issuer_broker_revocation_admission.py \
             -k test_root_file_revocation_pending_tampering_and_read_race
+      - name: Overlay exact pinned host-deploy selected controller into isolated namespace
+        run: |
+          mkdir -p companions/zog/src/zog/host_deploy
+          cp -a host-deploy/src/zog/host_deploy/. companions/zog/src/zog/host_deploy/
+          cmp host-deploy/src/zog/host_deploy/certificate_issuer_lifecycle.py \
+              companions/zog/src/zog/host_deploy/certificate_issuer_lifecycle.py
+          python - <<'PY'
+          import zog.box_control.issuer_lifecycle_broker
+          import zog.host_deploy.certificate_issuer_lifecycle
+          PY
       - name: 'Cross-owner checked heads - client verification then server revocation'
         env:
           AWS_EC2_METADATA_DISABLED: "true"
