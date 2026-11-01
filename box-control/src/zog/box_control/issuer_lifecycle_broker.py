@@ -29,7 +29,8 @@ _APP = "certify-manage"
 class IssuerLifecycleBroker:
     application = _APP
 
-    def __init__(self, control, *, authorized_uid, software_view):
+    def __init__(self, control, *, authorized_uid, software_view,
+                 authority_guard=None):
         if (type(authorized_uid) is not int or authorized_uid < 1
                 or authorized_uid >= 2**31
                 or not isinstance(software_view, str)
@@ -38,6 +39,21 @@ class IssuerLifecycleBroker:
         self.control = control
         self.authorized_uid = authorized_uid
         self.software_view = software_view
+        if authority_guard is None:
+            from .issuer_broker_authority import require_active_authority
+            authority_guard = require_active_authority
+        if not callable(authority_guard):
+            raise RoleBrokerError("issuer admission authority guard unavailable",
+                                  code="authority-revoked")
+        self._authority_guard = authority_guard
+
+    def _require_active_authority(self):
+        try:
+            if self._authority_guard(authorized_uid=self.authorized_uid) is not True:
+                raise ValueError("issuer authority not active")
+        except Exception:
+            raise RoleBrokerError("issuer broker authority unavailable or revoked",
+                                  code="authority-revoked") from None
 
     def _definition(self, program=None):
         from .specification import discover_applications
@@ -92,6 +108,11 @@ class IssuerLifecycleBroker:
             _text(request["request_id"], _REQUEST, "request identity")
         if "runtime_id" in request:
             _text(request["runtime_id"], _RUNTIME, "runtime identity")
+        # Client verification can be separated from this call by arbitrary
+        # time, reconnection, a queued worker, or revocation publication.
+        # The server must independently read the currently installed fixed
+        # root projection and final/pending tombstones for every RPC.
+        self._require_active_authority()
         if operation == "available":
             try:
                 self._definition()
@@ -120,6 +141,11 @@ class IssuerLifecycleBroker:
             original = self._result(request["request_id"])
             if original["status"] != "unknown" and original["program"] != program:
                 raise RoleBrokerError("request selector already bound", code="scope-rejected")
+            # Admission is rechecked after the potentially long preparation
+            # and durable request lookup, immediately before mutation.
+            # Post-admission/systemd-exec serialization is a separate native
+            # authority gate and remains disabled.
+            self._require_active_authority()
             runtime = self.control.launch_application(
                 _APP, request_id=request["request_id"], program_name=program,
             )
