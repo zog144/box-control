@@ -49,6 +49,13 @@ jobs:
           repository: zog144/root-control
           ref: 8a9583924109ef324eb80071953151c8c7e20b33
           path: root-control
+      - name: Check out exact selected host-deploy candidate for a source-only admission race
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/host-deploy
+          ref: b4e723abab3dadcf238b0552ee4d5f108e6a6d95
+          path: host-deploy
+          persist-credentials: false
       - name: Check out known compatible public image-build source
         uses: actions/checkout@v4
         with:
@@ -61,6 +68,7 @@ jobs:
       - name: Verify immutable companion checkout pins
         run: |
           test "$(git -C root-control rev-parse HEAD)" = "8a9583924109ef324eb80071953151c8c7e20b33"
+          test "$(git -C host-deploy rev-parse HEAD)" = "b4e723abab3dadcf238b0552ee4d5f108e6a6d95"
           test "$(git -C companions/zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
       - name: Install test dependencies
         run: python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
@@ -101,3 +109,11 @@ jobs:
             -m pytest -q -rs \
             box-control/tests/test_issuer_broker_revocation_admission.py \
             -k test_root_file_revocation_pending_tampering_and_read_race
+      - name: Cross-owner checked heads: client verification then server revocation
+        env:
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          PYTHONPATH="$PWD/host-deploy/src:$PWD/companions/zog/src" \
+            python -m pytest -q -ra \
+            box-control/tests/issuer_broker_cross_owner_candidate.py
+
