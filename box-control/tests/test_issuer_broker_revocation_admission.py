@@ -133,7 +133,6 @@ def test_broker_admission_requires_installed_identity(monkeypatch, mutation):
     monkeypatch.setattr(authority.os, "geteuid", lambda: 23001)
     with pytest.raises(RoleBrokerError, match="unavailable or revoked"):
         authority.require_active_authority(authorized_uid=23002)
-    assert authority.require_active_authority if True else None
 
 
 def test_active_fixed_projection_can_admit_at_broker_only(monkeypatch):
