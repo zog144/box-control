@@ -253,6 +253,95 @@ class BoxControl:
         return dict(schema=VERSION, workspace_id=workspace_id, desktop_runtime_id=binding['desktop_runtime_id'],
                     display=binding['display'], vnc_endpoint=binding['vnc_endpoint'], ready=info['ready'], advisory=True, observed_at=time.time())
 
+    def workspace_desktop_readiness(self, workspace_id):
+        """Advisory, read-only X11 and RFB evidence; never an access grant.
+
+        Keep workspace_desktop_access's existing contract unchanged. Neither a
+        combined ready flag nor a saved endpoint counts as stage confirmation.
+        """
+        import math
+        import re
+        from .workspaces import Workspaces, VERSION
+        from .inspection import _snapshot, RecoveryInspection
+        schema = 'zog-workspace-stage-readiness-v1'
+        missing = dict(status='unknown', code='binding-unavailable')
+
+        def unknown(runtime_id=None, boot_id=None, incarnation=None):
+            return dict(schema=schema, workspace_id=workspace_id,
+                        desktop_runtime_id=runtime_id, boot_id=boot_id,
+                        incarnation=incarnation, endpoint_identity=None,
+                        observed_at=time.time(), x11=dict(missing),
+                        rfb=dict(missing), advisory=True)
+
+        def selected():
+            with _snapshot(self.project, RecoveryInspection()) as available:
+                if not available:
+                    return None
+                record = Workspaces(self.project).load(workspace_id)
+                refs, _, _ = Workspaces(self.project).evidence()
+                current_boot = self.boot_id_provider()
+                desktops = [r for r in refs.values() if
+                    (r.workspace_binding or {}).get('workspace_id') == workspace_id
+                    and (r.workspace_binding or {}).get('role') == 'desktop'
+                    and (r.workspace_binding or {}).get('incarnation') == record['incarnation']
+                    and r.state.value == 'running' and r.boot_id == current_boot
+                    and (r.workspace_binding or {}).get('boot_id') == current_boot]
+                if len(desktops) != 1 or record['state'] != 'registered':
+                    return None
+                d = desktops[0]
+                return dict(d.workspace_binding, role='client',
+                            desktop_runtime_id=d.runtime_id)
+
+        try:
+            binding = selected()
+            if binding is None:
+                return unknown()
+            identity = dict(desktop_runtime_id=binding['desktop_runtime_id'],
+                            boot_id=binding['boot_id'],
+                            incarnation=binding['incarnation'])
+            try:
+                proof = self.systemd_transport.workspace_call(
+                    'readiness', project_root=self.project.path, binding=binding)
+            except Exception:
+                return unknown(**identity)
+            # Authenticate schema and allowlist; do not pass through any
+            # arbitrary root response or diagnostic strings.
+            expected = {'schema', 'workspace_id', 'desktop_runtime_id',
+                        'boot_id', 'incarnation', 'endpoint_identity',
+                        'observed_at', 'x11', 'rfb'}
+            reasons = {
+                'confirmed': {'ok'},
+                'failed': {'x11-rejected', 'rfb-invalid', 'endpoint-identity'},
+                'unknown': {'probe-unavailable', 'binding-unavailable'},
+            }
+            if (type(proof) is not dict or set(proof) != expected
+                    or proof['schema'] != schema
+                    or any(proof[field] != value for field, value in (
+                        ('workspace_id', workspace_id), *identity.items()))
+                    or type(proof['endpoint_identity']) is not str
+                    or re.fullmatch(r'[a-f0-9]{64}', proof['endpoint_identity']) is None
+                    or type(proof['observed_at']) not in (float, int)
+                    or not math.isfinite(proof['observed_at'])
+                    or not 0 <= time.time() - proof['observed_at'] <= 5):
+                return unknown(**identity)
+            for name in ('x11', 'rfb'):
+                row = proof[name]
+                if (type(row) is not dict or set(row) != {'status', 'code'}
+                        or row['status'] not in reasons
+                        or row['code'] not in reasons[row['status']]
+                        or row['status'] == 'failed' and
+                           row['code'] not in (
+                               {'x11-rejected', 'endpoint-identity'} if name == 'x11'
+                               else {'rfb-invalid', 'endpoint-identity'})):
+                    return unknown(**identity)
+            # The root call never runs under the controller snapshot lock.
+            # Re-select afterward to exclude replacement, boot or epoch races.
+            if selected() != binding:
+                return unknown(**identity)
+            return {**proof, 'advisory': True}
+        except Exception:
+            return unknown()
+
     def workspace_application_catalogue(self, *, after=None, limit=50):
         from .specification import discover_applications
         from .workspaces import VERSION, WorkspaceError
