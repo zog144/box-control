@@ -38,14 +38,21 @@ jobs:
           assert not (dst/'__init__.py').exists()
           assert (dst/'image_build').is_dir()
           PY
+      - uses: actions/checkout@v4
+        with:
+          repository: zog144/root-control
+          ref: dedf5d8f1b6c51aa81fe6ceb342a978f3af11566
+          path: companions/root-control
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
       - run: |
           python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
+          test "$(git -C companions/root-control rev-parse HEAD)" = dedf5d8f1b6c51aa81fe6ceb342a978f3af11566
           cd box-control
           python -m compileall -q src/zog/box_control/api.py tests/test_workspace_readiness_evidence.py
-          PYTHONPATH=src:tests:../.ci-deps python -m pytest -q -rs tests/test_workspace_readiness_evidence.py tests/test_workspaces.py
+          PYTHONPATH=src:tests:../.ci-deps:../companions/root-control/src python -m pytest -q -rs tests/test_workspace_readiness_evidence.py tests/test_workspaces.py ../companions/root-control/tests/test_workspace_readiness.py
       - name: No native Workspace or station acceptance
         if: always()
         run: echo 'Source-only controller mock transport; no real X11/RFB launch and no browser grant.' >> "$GITHUB_STEP_SUMMARY"
