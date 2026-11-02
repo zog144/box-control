@@ -16,6 +16,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zog144/zog
+          ref: d47d86b363824c718d9c165124cb55bbed12e0f9
+          path: companions/zog
+          persist-credentials: false
+      - name: Use non-shadowing, immutable historical support modules only
+        run: |
+          test "$(git -C companions/zog rev-parse HEAD)" = d47d86b363824c718d9c165124cb55bbed12e0f9
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('companions/zog/src/zog').resolve()
+          dst=Path('.ci-deps/zog')
+          dst.mkdir(parents=True,exist_ok=True)
+          for p in src.iterdir():
+              if p.name in {'__init__.py','__pycache__','root_control','box_control'}:
+                  continue
+              if p.is_dir() or (p.is_file() and p.suffix=='.py'):
+                  (dst/p.name).symlink_to(p)
+          assert not (dst/'__init__.py').exists()
+          assert (dst/'image_build').is_dir()
+          PY
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -23,7 +45,7 @@ jobs:
           python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
           cd box-control
           python -m compileall -q src/zog/box_control/api.py tests/test_workspace_readiness_evidence.py
-          PYTHONPATH=src python -m pytest -q -rs tests/test_workspace_readiness_evidence.py tests/test_workspaces.py
+          PYTHONPATH=src:tests:../.ci-deps python -m pytest -q -rs tests/test_workspace_readiness_evidence.py tests/test_workspaces.py
       - name: No native Workspace or station acceptance
         if: always()
         run: echo 'Source-only controller mock transport; no real X11/RFB launch and no browser grant.' >> "$GITHUB_STEP_SUMMARY"
