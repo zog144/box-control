@@ -37,9 +37,9 @@ def setup(tmp_path):
     control=fixtures.control_for(project,tmp_path,transport,['boot'])
     resource='a'*32
     control.register_build_root(resource_id=resource,prepared_root='/root/input',source_directory='/root/source',output_directory='/root/output',
-                                input_manifest_id='manifest',execution_user_id=1001,execution_group_id=1001)
+                                input_manifest_id='manifest')
     request=dict(build_root_id=resource,source_workspace_id=resource+'-source',output_workspace_id=resource+'-output',command=['cc','--version'],
-                 environment={'PATH':'/bin'},working_directory='/image-build/source',execution_user_id=1001,execution_group_id=1001,
+                 environment={'PATH':'/bin'},working_directory='/image-build/source',
                  startup_timeout_seconds=5,execution_timeout_seconds=10,termination_grace_seconds=3,
                  resource_limits={'thread-count-maximum':32,'memory-maximum-bytes':100000000},read_only_root=True,network_access=False)
     return control,transport,request
@@ -160,7 +160,7 @@ def test_adapter_persists_identity_and_resumes_after_caller_loss(setup,tmp_path)
     root,source,output=[package/n for n in ('root','source','output')]
     for p in (root,source,output): p.mkdir()
     request=BuildExecutionRequest(root,source,output,('cc',),{'PATH':'/bin'},'/image-build/source',10)
-    config=dict(execution_user_id=1001,execution_group_id=1001,startup_timeout_seconds=5,termination_grace_seconds=3,
+    config=dict(startup_timeout_seconds=5,termination_grace_seconds=3,
                 wait_timeout_seconds=0,resource_limits=r['resource_limits'],input_manifest_id='manifest')
     adapter=BoxControlExecutionAdapter(c,**config)
     checkpoint=package/'compile.controller.json'
@@ -323,7 +323,7 @@ def test_late_registration_reconciles_same_identity_and_keeps_guard_until_ready(
     c,t,_ = setup
     rid='f'*32
     intent=dict(prepared_root='/root/late',source_directory='/root/late-source',output_directory='/root/late-output',
-                input_manifest_id='late-manifest',execution_user_id=1001,execution_group_id=1001)
+                input_manifest_id='late-manifest')
     original=t.build_call
     registrations=[]
     remote={'resource_id':rid,'intent':intent,'state':'importing','phase':'sync-source'}
@@ -403,7 +403,6 @@ def test_independent_registered_build_lanes_run_without_replacing_first_writer(s
         source_directory="/root/second-source",
         output_directory="/root/second-output",
         input_manifest_id="manifest-2",
-        execution_user_id=1001, execution_group_id=1001,
     )
     independent = dict(first, build_root_id=second_id,
                        source_workspace_id=second_id + "-source",
@@ -505,3 +504,11 @@ def test_saved_running_job_status_is_uncertain_without_live_observation(setup):
     assert status["process_cleanup_complete"] is False
     assert transport.build_starts == started
     assert (c.project.state_dir / "build-job" / (job["job_id"] + ".json")).read_bytes() == before
+
+@pytest.mark.parametrize('selector', ['execution_user_id', 'execution_group_id', 'User', 'Group'])
+def test_finite_build_rejects_alternate_identity_selectors(setup, selector):
+    c, t, request = setup
+    with pytest.raises((RuntimeOperationError, ValueError)):
+        c.submit_build_job(request_id=c.issue_build_request_id(),
+                           **dict(request, **{selector: 24202}))
+    assert t.build_starts == 0
