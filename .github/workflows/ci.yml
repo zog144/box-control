@@ -155,6 +155,15 @@ jobs:
               files=set(archive.namelist())
               assert 'zog/box_control/__init__.py' in files
               assert 'zog/box_control/api.py' in files
+              for required in (
+                  'zog/box_control/issuer_lifecycle_broker.py',
+                  'zog/box_control/issuer_observer.py',
+                  'zog/box_control/issuer_broker_authority.py',
+                  'zog/box_control/host_bindings.py',
+                  'zog/box_control/build_protocol.py',
+                  'zog/box_control/build_jobs.py',
+              ):
+                  assert required in files, required
               assert 'zog/__init__.py' not in files
               assert not any(x.startswith('zog/root_control/') for x in files)
               assert any(x.endswith('/LICENSE') for x in files)
