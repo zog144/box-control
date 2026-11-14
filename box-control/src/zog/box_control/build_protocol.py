@@ -30,7 +30,7 @@ def canonical_request(raw):
         raise RuntimeOperationError("invalid build request") from exc
     required = {
         "build_root_id", "source_workspace_id", "output_workspace_id", "command", "environment",
-        "working_directory", "execution_user_id", "execution_group_id", "startup_timeout_seconds",
+        "working_directory", "startup_timeout_seconds",
         "execution_timeout_seconds", "termination_grace_seconds", "resource_limits", "read_only_root",
         "network_access",
     }
@@ -43,9 +43,6 @@ def canonical_request(raw):
         raise RuntimeOperationError("workspace does not belong to registered build root")
     if value["read_only_root"] is not True or value["network_access"] is not False:
         raise RuntimeOperationError("build requires read-only root and disabled network")
-    for key in ("execution_user_id", "execution_group_id"):
-        if type(value[key]) is not int or not 0 < value[key] < 2**31:
-            raise RuntimeOperationError("explicit nonzero build UID/GID required")
     for key in ("startup_timeout_seconds", "execution_timeout_seconds", "termination_grace_seconds"):
         _positive(value[key], key)
     if (

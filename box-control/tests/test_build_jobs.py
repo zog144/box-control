@@ -37,9 +37,9 @@ def setup(tmp_path):
     control=fixtures.control_for(project,tmp_path,transport,['boot'])
     resource='a'*32
     control.register_build_root(resource_id=resource,prepared_root='/root/input',source_directory='/root/source',output_directory='/root/output',
-                                input_manifest_id='manifest',execution_user_id=1001,execution_group_id=1001)
+                                input_manifest_id='manifest')
     request=dict(build_root_id=resource,source_workspace_id=resource+'-source',output_workspace_id=resource+'-output',command=['cc','--version'],
-                 environment={'PATH':'/bin'},working_directory='/image-build/source',execution_user_id=1001,execution_group_id=1001,
+                 environment={'PATH':'/bin'},working_directory='/image-build/source',
                  startup_timeout_seconds=5,execution_timeout_seconds=10,termination_grace_seconds=3,
                  resource_limits={'thread-count-maximum':32,'memory-maximum-bytes':100000000},read_only_root=True,network_access=False)
     return control,transport,request
@@ -160,7 +160,7 @@ def test_adapter_persists_identity_and_resumes_after_caller_loss(setup,tmp_path)
     root,source,output=[package/n for n in ('root','source','output')]
     for p in (root,source,output): p.mkdir()
     request=BuildExecutionRequest(root,source,output,('cc',),{'PATH':'/bin'},'/image-build/source',10)
-    config=dict(execution_user_id=1001,execution_group_id=1001,startup_timeout_seconds=5,termination_grace_seconds=3,
+    config=dict(startup_timeout_seconds=5,termination_grace_seconds=3,
                 wait_timeout_seconds=0,resource_limits=r['resource_limits'],input_manifest_id='manifest')
     adapter=BoxControlExecutionAdapter(c,**config)
     checkpoint=package/'compile.controller.json'
@@ -323,7 +323,7 @@ def test_late_registration_reconciles_same_identity_and_keeps_guard_until_ready(
     c,t,_ = setup
     rid='f'*32
     intent=dict(prepared_root='/root/late',source_directory='/root/late-source',output_directory='/root/late-output',
-                input_manifest_id='late-manifest',execution_user_id=1001,execution_group_id=1001)
+                input_manifest_id='late-manifest')
     original=t.build_call
     registrations=[]
     remote={'resource_id':rid,'intent':intent,'state':'importing','phase':'sync-source'}
@@ -389,3 +389,11 @@ def test_invalid_cpu_weight_rejected(setup,value):
     _,_,request=setup
     weighted=dict(request,resource_limits=dict(request['resource_limits'],**{'cpu-weight':value}))
     with pytest.raises(RuntimeOperationError):canonical_request(weighted)
+
+
+@pytest.mark.parametrize('selector', ['execution_user_id','execution_group_id'])
+def test_build_protocol_rejects_user_selection(setup, selector):
+    from zog.box_control.build_protocol import canonical_request
+    _, _, request = setup
+    with pytest.raises(RuntimeOperationError, match='missing or unsupported fields'):
+        canonical_request(dict(request, **{selector:24202}))
