@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, unstable]
   push:
-    branches: [unstable, regular/issuer-broker-revocation-admission-20261101]
+    branches: [unstable, regular/issuer-broker-revocation-admission-20261101, regular/issuer-and-inherited-build-20261114]
     paths:
       - 'box-control/src/zog/box_control/application_storage.py'
       - 'box-control/src/zog/box_control/host_bindings.py'
@@ -29,6 +29,8 @@ on:
       - 'box-control/src/zog/box_control/model.py'
       - 'box-control/src/zog/box_control/specification.py'
       - 'box-control/tests/test_execution_identity.py'
+      - 'box-control/src/zog/box_control/build_protocol.py'
+      - 'box-control/tests/test_build_jobs.py'
       - '.github/workflows/certificate-controller-integration.yml'
   workflow_dispatch:
 
@@ -47,7 +49,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: zog144/root-control
-          ref: 8a9583924109ef324eb80071953151c8c7e20b33
+          ref: f54eaf84de4da8f1df203897d0537faef955800c
           path: root-control
       - name: Check out exact selected host-deploy candidate for a source-only admission race
         uses: actions/checkout@v4
@@ -62,14 +64,22 @@ jobs:
           repository: zog144/zog
           ref: d47d86b363824c718d9c165124cb55bbed12e0f9
           path: companions/zog
+      - name: Select exact inherited-user image-build producer (not a second root-control)
+        uses: actions/checkout@v4
+        with:
+          repository: zog144/image-build
+          ref: 620378bdd8075daeb5eaad45eedea4af7db36423
+          path: companions/image-build-inherited
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Verify immutable companion checkout pins
         run: |
-          test "$(git -C root-control rev-parse HEAD)" = "8a9583924109ef324eb80071953151c8c7e20b33"
+          test "$(git -C root-control rev-parse HEAD)" = "f54eaf84de4da8f1df203897d0537faef955800c"
           test "$(git -C host-deploy rev-parse HEAD)" = "b4e723abab3dadcf238b0552ee4d5f108e6a6d95"
           test "$(git -C companions/zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
+          test "$(git -C companions/image-build-inherited rev-parse HEAD)" = "620378bdd8075daeb5eaad45eedea4af7db36423"
       - name: Install test dependencies
         run: python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
       - name: Overlay exact component source onto frozen namespace fixture
@@ -79,7 +89,18 @@ jobs:
           # components. Overlay them in the disposable CI workspace only.
           cp -a box-control/src/zog/box_control/. companions/zog/src/zog/box_control/
           cp -a root-control/src/zog/root_control/. companions/zog/src/zog/root_control/
-          python -c 'import zog.box_control.host_bindings, zog.root_control.systemd'
+          cp -a companions/image-build-inherited/src/zog/image_build/. companions/zog/src/zog/image_build/
+          python -c 'import zog.box_control.host_bindings, zog.root_control.systemd, zog.image_build.box_control_adapter'
+          python - <<'PY'
+          from zog.root_control.task_c_trusted_host import LocalTaskCJournal
+          from zog.root_control.issuer_observation import observe_issuer_request
+          from zog.root_control.issuer_inspection_result import read_selected_inspection
+          from zog.root_control.build import BuildBackend
+          from zog.box_control.issuer_lifecycle_broker import IssuerLifecycleBroker
+          assert callable(LocalTaskCJournal.submit_once)
+          assert callable(observe_issuer_request) and callable(read_selected_inspection)
+          assert callable(BuildBackend.start) and callable(IssuerLifecycleBroker)
+          PY
       - name: Compile both controller sources
         run: python -m compileall -q box-control/src root-control/src
       - name: Test certificate authority binding and managed storage privacy
@@ -99,7 +120,12 @@ jobs:
             root-control/tests/test_selected_program_authority.py \
             root-control/tests/test_issuer_observation.py \
             root-control/tests/test_issuer_credentials.py \
-            root-control/tests/test_issuer_station_transfer.py
+            root-control/tests/test_issuer_station_transfer.py \
+            root-control/tests/test_issuer_inspection_result.py \
+            root-control/tests/test_issuer_systemd_fence.py \
+            root-control/tests/test_combined_issuer_taskc_build.py \
+            root-control/tests/test_build_backend.py \
+            box-control/tests/test_build_jobs.py
 
       - name: Root-owned ephemeral authority and revocation race check (no native Host)
         env:
