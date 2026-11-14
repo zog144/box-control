@@ -2,9 +2,9 @@ name: Public source validation
 
 on:
   push:
-    branches: [main, unstable]
+    branches: [main, unstable, regular/issuer-and-inherited-build-20261114]
   pull_request:
-    branches: [main, unstable]
+    branches: [main, unstable, regular/issuer-and-inherited-build-20261114]
   workflow_dispatch:
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: zog144/root-control
-          ref: 8a9583924109ef324eb80071953151c8c7e20b33
+          ref: f54eaf84de4da8f1df203897d0537faef955800c
           path: companions/root-control
           persist-credentials: false
       - name: Check out immutable public Zog aggregate for companions
@@ -48,7 +48,7 @@ jobs:
           test -f LICENSES/GPL-3.0-only.txt
       - name: Validate exact current privileged companion and historical support fixture
         run: |
-          test "$(git -C companions/root-control rev-parse HEAD)" = "8a9583924109ef324eb80071953151c8c7e20b33"
+          test "$(git -C companions/root-control rev-parse HEAD)" = "f54eaf84de4da8f1df203897d0537faef955800c"
           test "$(git -C companions/zog rev-parse HEAD)" = "d47d86b363824c718d9c165124cb55bbed12e0f9"
           test -f companions/root-control/src/zog/root_control/daemon.py
           test -f companions/zog/src/zog/image_build/__init__.py
