@@ -10,6 +10,29 @@ from pathlib import PurePosixPath
 
 from .errors import RuntimeOperationError
 
+# A wire-envelope contract, not a caller-selectable execution user or group.
+# root-control must validate this exact value and derive EUID/EGID exclusively
+# from the connecting AF_UNIX socket's kernel-authenticated SO_PEERCRED.
+INHERITED_EXECUTION_CONTRACT = "zog-build-inherited-peer-v2"
+REGISTRATION_FIELDS = frozenset((
+    "prepared_root", "source_directory", "output_directory", "input_manifest_id",
+))
+
+
+def canonical_registration(raw):
+    """Reject legacy identity selectors before a durable registration is written."""
+    try:
+        value = json.loads(json.dumps(raw, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeOperationError("invalid build registration") from exc
+    if type(value) is not dict or set(value) != REGISTRATION_FIELDS:
+        raise RuntimeOperationError("registration has missing or unsupported fields")
+    if any(type(value[k]) is not str or not value[k] or "\\0" in value[k]
+           for k in REGISTRATION_FIELDS):
+        raise RuntimeOperationError("invalid registered build path or manifest")
+    return value
+
+
 
 def identity(value):
     if not isinstance(value, str) or len(value) != 32 or any(c not in "0123456789abcdef" for c in value):
