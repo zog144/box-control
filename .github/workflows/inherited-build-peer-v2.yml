@@ -1,0 +1,76 @@
+name: Inherited-peer v2 build client source contract
+on:
+  push:
+    branches: [regular/issuer-and-inherited-build-20261114]
+    paths:
+      - 'box-control/src/zog/box_control/build_protocol.py'
+      - 'box-control/src/zog/box_control/build_jobs.py'
+      - 'box-control/src/zog/box_control/runtime/root_control.py'
+      - 'box-control/tests/test_build_jobs.py'
+      - '.github/workflows/inherited-build-peer-v2.yml'
+  pull_request:
+    paths:
+      - 'box-control/src/zog/box_control/build_protocol.py'
+      - 'box-control/src/zog/box_control/build_jobs.py'
+      - 'box-control/src/zog/box_control/runtime/root_control.py'
+      - 'box-control/tests/test_build_jobs.py'
+      - '.github/workflows/inherited-build-peer-v2.yml'
+permissions:
+  contents: read
+jobs:
+  inherited-peer-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zog144/root-control
+          ref: d9dfd6c02a5a96750f1213bf663cdceab72f1efd
+          path: root-control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zog144/zog
+          ref: d47d86b363824c718d9c165124cb55bbed12e0f9
+          path: companions/zog
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zog144/image-build
+          ref: 620378bdd8075daeb5eaad45eedea4af7db36423
+          path: image-build-inherited
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
+      - name: Assemble ephemeral exact source namespace
+        run: |
+          test "$(git -C root-control rev-parse HEAD)" = d9dfd6c02a5a96750f1213bf663cdceab72f1efd
+          test "$(git -C companions/zog rev-parse HEAD)" = d47d86b363824c718d9c165124cb55bbed12e0f9
+          test "$(git -C image-build-inherited rev-parse HEAD)" = 620378bdd8075daeb5eaad45eedea4af7db36423
+          cp -a box-control/src/zog/box_control/. companions/zog/src/zog/box_control/
+          cp -a root-control/src/zog/root_control/. companions/zog/src/zog/root_control/
+          cp -a image-build-inherited/src/zog/image_build/. companions/zog/src/zog/image_build/
+      - name: Validate strict inherited peer client and legacy recovery
+        env:
+          PYTHONPATH: ${{ github.workspace }}/companions/zog/src
+        run: |
+          python -m compileall -q box-control/src
+          python -m pytest -q -ra box-control/tests/test_build_jobs.py
+          python - <<'PY'
+          from zog.box_control.build_protocol import INHERITED_EXECUTION_CONTRACT
+          from zog.box_control.runtime.root_control import RootControlSystemdTransport
+          assert INHERITED_EXECUTION_CONTRACT == "zog-build-inherited-peer-v2"
+          assert callable(RootControlSystemdTransport.build_call)
+          PY
+      - if: always()
+        run: |
+          echo 'Source-only box-control v2 client. Root-control #48 must still implement SO_PEERCRED-derived nonroot child identity, then image-build successor and native tests must agree. No dispatch or SSM.' >> "$GITHUB_STEP_SUMMARY"

@@ -37,9 +37,9 @@ def setup(tmp_path):
     control=fixtures.control_for(project,tmp_path,transport,['boot'])
     resource='a'*32
     control.register_build_root(resource_id=resource,prepared_root='/root/input',source_directory='/root/source',output_directory='/root/output',
-                                input_manifest_id='manifest',execution_user_id=1001,execution_group_id=1001)
+                                input_manifest_id='manifest')
     request=dict(build_root_id=resource,source_workspace_id=resource+'-source',output_workspace_id=resource+'-output',command=['cc','--version'],
-                 environment={'PATH':'/bin'},working_directory='/image-build/source',execution_user_id=1001,execution_group_id=1001,
+                 environment={'PATH':'/bin'},working_directory='/image-build/source',
                  startup_timeout_seconds=5,execution_timeout_seconds=10,termination_grace_seconds=3,
                  resource_limits={'thread-count-maximum':32,'memory-maximum-bytes':100000000},read_only_root=True,network_access=False)
     return control,transport,request
@@ -160,7 +160,7 @@ def test_adapter_persists_identity_and_resumes_after_caller_loss(setup,tmp_path)
     root,source,output=[package/n for n in ('root','source','output')]
     for p in (root,source,output): p.mkdir()
     request=BuildExecutionRequest(root,source,output,('cc',),{'PATH':'/bin'},'/image-build/source',10)
-    config=dict(execution_user_id=1001,execution_group_id=1001,startup_timeout_seconds=5,termination_grace_seconds=3,
+    config=dict(startup_timeout_seconds=5,termination_grace_seconds=3,
                 wait_timeout_seconds=0,resource_limits=r['resource_limits'],input_manifest_id='manifest')
     adapter=BoxControlExecutionAdapter(c,**config)
     checkpoint=package/'compile.controller.json'
@@ -323,7 +323,7 @@ def test_late_registration_reconciles_same_identity_and_keeps_guard_until_ready(
     c,t,_ = setup
     rid='f'*32
     intent=dict(prepared_root='/root/late',source_directory='/root/late-source',output_directory='/root/late-output',
-                input_manifest_id='late-manifest',execution_user_id=1001,execution_group_id=1001)
+                input_manifest_id='late-manifest')
     original=t.build_call
     registrations=[]
     remote={'resource_id':rid,'intent':intent,'state':'importing','phase':'sync-source'}
@@ -403,7 +403,6 @@ def test_independent_registered_build_lanes_run_without_replacing_first_writer(s
         source_directory="/root/second-source",
         output_directory="/root/second-output",
         input_manifest_id="manifest-2",
-        execution_user_id=1001, execution_group_id=1001,
     )
     independent = dict(first, build_root_id=second_id,
                        source_workspace_id=second_id + "-source",
@@ -505,3 +504,162 @@ def test_saved_running_job_status_is_uncertain_without_live_observation(setup):
     assert status["process_cleanup_complete"] is False
     assert transport.build_starts == started
     assert (c.project.state_dir / "build-job" / (job["job_id"] + ".json")).read_bytes() == before
+
+@pytest.mark.parametrize('selector', ['execution_user_id', 'execution_group_id', 'User', 'Group'])
+def test_finite_build_rejects_alternate_identity_selectors(setup, selector):
+    c, t, request = setup
+    with pytest.raises((RuntimeOperationError, ValueError)):
+        c.submit_build_job(request_id=c.issue_build_request_id(),
+                           **dict(request, **{selector: 24202}))
+    assert t.build_starts == 0
+
+
+# Inherited-execution protocol v2: normal client cannot select an identity.
+@pytest.mark.parametrize('field,value', [
+    ('execution_user_id', 24201),
+    ('execution_group_id', 24202),
+    ('uid', 0), ('gid', 0), ('User', 'root'), ('Group', 'root'),
+    ('build_contract', 'zog-build-legacy-v1'),
+])
+def test_registration_identity_override_denied_before_persistence(setup, field, value):
+    from zog.box_control.build_jobs import BuildJobs
+    c, t, r = setup
+    rid = 'f' * 32
+    with pytest.raises(RuntimeOperationError, match='unsupported fields'):
+        c.register_build_root(
+            resource_id=rid, prepared_root='/root/input',
+            source_directory='/root/source', output_directory='/root/output',
+            input_manifest_id='manifest', **{field: value})
+    assert not BuildJobs(c).path('resource:' + rid).exists()
+
+
+@pytest.mark.parametrize('field,value', [
+    ('execution_user_id', 24201),
+    ('execution_group_id', 24202),
+    ('uid', 0), ('gid', 0), ('User', 'root'), ('Group', 'root'),
+    ('build_contract', 'zog-build-legacy-v1'),
+])
+def test_build_request_identity_override_denied_before_start(setup, field, value):
+    c, t, request = setup
+    with pytest.raises(RuntimeOperationError, match='unsupported fields'):
+        c.submit_build_job(
+            request_id=c.issue_build_request_id(),
+            **dict(request, **{field: value}))
+    assert t.build_starts == 0
+
+
+def test_registration_and_request_records_mark_inherited_contract(setup):
+    from zog.box_control.build_protocol import INHERITED_EXECUTION_CONTRACT
+    from zog.box_control.build_jobs import BuildJobs
+    c, t, request = setup
+    store = BuildJobs(c)
+    resource = store.load('resource:' + request['build_root_id'])
+    assert resource['execution_contract'] == INHERITED_EXECUTION_CONTRACT
+    job = submit(setup)
+    assert store.load('job:' + job['job_id'])['execution_contract'] == INHERITED_EXECUTION_CONTRACT
+
+
+def test_historical_resource_is_readable_but_never_registered_again(setup):
+    from zog.box_control.build_jobs import BuildJobs
+    c, t, request = setup
+    store = BuildJobs(c)
+    root_id = request['build_root_id']
+    saved = store.load('resource:' + root_id)
+    saved.pop('execution_contract')
+    saved['intent']['execution_user_id'] = 24201
+    store.save(saved)
+    assert store.load('resource:' + root_id) == saved
+    with pytest.raises(RecoveryRequired, match='legacy build identity'):
+        c.register_build_root(
+            resource_id=root_id, prepared_root='/root/input',
+            source_directory='/root/source', output_directory='/root/output',
+            input_manifest_id='manifest')
+    # The first denial may leave the broader mutation recovery interlock
+    # active; either protection forbids a second mutation or replay.
+    with pytest.raises(RecoveryRequired):
+        c.submit_build_job(request_id=c.issue_build_request_id(), **request)
+    assert t.build_starts == 0
+
+
+def test_historical_job_retained_for_inspection_without_replay(setup):
+    from zog.box_control.build_jobs import BuildJobs
+    c, t, request = setup
+    job = submit(setup)
+    store = BuildJobs(c)
+    persisted = store.load('job:' + job['job_id'])
+    persisted.pop('execution_contract')
+    persisted['request']['execution_user_id'] = 24201
+    store.save(persisted)
+    assert c.inspect_build_job(job['job_id']) == persisted
+    with pytest.raises(RecoveryRequired, match='legacy build identity'):
+        c.refresh_build_job(job['job_id'])
+    # The persistent mutation marker may reject even before the historical
+    # record guard after the first failed refresh. Both are fail-closed.
+    with pytest.raises(RecoveryRequired):
+        c.submit_build_job(request_id=job['request_id'], **request)
+    assert t.build_starts == 1
+
+
+def test_real_transport_emits_versioned_peer_bound_envelope():
+    from zog.box_control.build_protocol import INHERITED_EXECUTION_CONTRACT
+    from zog.box_control.runtime.root_control import RootControlSystemdTransport
+    transport = RootControlSystemdTransport(Path('/run/zog/root-control.sock'))
+    sent = []
+    transport._request = lambda op, **kw: sent.append((op, kw)) or {}
+    root_id = 'a' * 32
+    transport.build_call(
+        'register', project_root=Path('/example/project'), resource_id=root_id,
+        prepared_root='/input', source_directory='/source',
+        output_directory='/output', input_manifest_id='sha256:example')
+    op, wire = sent[0]
+    assert op == 'build_register'
+    assert wire['build_contract'] == INHERITED_EXECUTION_CONTRACT
+    assert wire['project_root'] == '/example/project'
+    assert set(wire) == {
+        'build_contract', 'project_root', 'resource_id', 'prepared_root',
+        'source_directory', 'output_directory', 'input_manifest_id'}
+    assert not any(x in wire for x in ('uid', 'gid', 'User', 'Group',
+                                         'execution_user_id', 'execution_group_id'))
+    with pytest.raises(RuntimeOperationError, match='unsupported'):
+        transport.build_call(
+            'register', project_root='/example/project', resource_id=root_id,
+            prepared_root='/input', source_directory='/source',
+            output_directory='/output', input_manifest_id='manifest',
+            execution_group_id=24202)
+    assert len(sent) == 1
+
+
+def test_real_transport_versions_prepare_start_and_recovery_without_identity_selectors(setup):
+    from zog.box_control.build_protocol import INHERITED_EXECUTION_CONTRACT
+    from zog.box_control.runtime.root_control import RootControlSystemdTransport
+    c, t, request = setup
+    transport = RootControlSystemdTransport(Path('/run/zog/root-control.sock'))
+    sent = []
+    transport._request = lambda operation, **payload: sent.append((operation, payload)) or {}
+    job_id = 'b' * 32
+    root_id = request['build_root_id']
+    calls = (
+        ('prepare', {'job_id': job_id, 'request': request}),
+        ('start', {'job_id': job_id, 'request': request}),
+        ('observe', {'job_id': job_id, 'build_root_id': root_id}),
+        ('cleanup', {'job_id': job_id, 'build_root_id': root_id}),
+        ('cancel', {'job_id': job_id, 'build_root_id': root_id,
+                    'expected_invocation_id': None}),
+        ('release', {'build_root_id': root_id}),
+        ('forget', {'build_root_id': root_id}),
+    )
+    for operation, fields in calls:
+        transport.build_call(operation, project_root=c.project.path, **fields)
+    assert [op for op, _ in sent] == ['build_' + op for op, _ in calls]
+    for operation, payload in sent:
+        assert payload['build_contract'] == INHERITED_EXECUTION_CONTRACT
+        assert payload['project_root'] == str(c.project.path)
+        assert not any(selector in payload for selector in (
+            'execution_user_id', 'execution_group_id', 'uid', 'gid', 'User', 'Group'))
+    assert sent[0][1]['request'] == request
+    assert sent[1][1]['request'] == request
+    with pytest.raises(RuntimeOperationError, match='unsupported fields'):
+        transport.build_call(
+            'start', project_root=c.project.path, job_id=job_id,
+            request=dict(request, User='root'))
+    assert len(sent) == len(calls)

@@ -10,6 +10,29 @@ from pathlib import PurePosixPath
 
 from .errors import RuntimeOperationError
 
+# A wire-envelope contract, not a caller-selectable execution user or group.
+# root-control must validate this exact value and derive EUID/EGID exclusively
+# from the connecting AF_UNIX socket's kernel-authenticated SO_PEERCRED.
+INHERITED_EXECUTION_CONTRACT = "zog-build-inherited-peer-v2"
+REGISTRATION_FIELDS = frozenset((
+    "prepared_root", "source_directory", "output_directory", "input_manifest_id",
+))
+
+
+def canonical_registration(raw):
+    """Reject legacy identity selectors before a durable registration is written."""
+    try:
+        value = json.loads(json.dumps(raw, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeOperationError("invalid build registration") from exc
+    if type(value) is not dict or set(value) != REGISTRATION_FIELDS:
+        raise RuntimeOperationError("registration has missing or unsupported fields")
+    if any(type(value[k]) is not str or not value[k] or "\\0" in value[k]
+           for k in REGISTRATION_FIELDS):
+        raise RuntimeOperationError("invalid registered build path or manifest")
+    return value
+
+
 
 def identity(value):
     if not isinstance(value, str) or len(value) != 32 or any(c not in "0123456789abcdef" for c in value):
@@ -30,7 +53,7 @@ def canonical_request(raw):
         raise RuntimeOperationError("invalid build request") from exc
     required = {
         "build_root_id", "source_workspace_id", "output_workspace_id", "command", "environment",
-        "working_directory", "execution_user_id", "execution_group_id", "startup_timeout_seconds",
+        "working_directory", "startup_timeout_seconds",
         "execution_timeout_seconds", "termination_grace_seconds", "resource_limits", "read_only_root",
         "network_access",
     }
@@ -43,9 +66,6 @@ def canonical_request(raw):
         raise RuntimeOperationError("workspace does not belong to registered build root")
     if value["read_only_root"] is not True or value["network_access"] is not False:
         raise RuntimeOperationError("build requires read-only root and disabled network")
-    for key in ("execution_user_id", "execution_group_id"):
-        if type(value[key]) is not int or not 0 < value[key] < 2**31:
-            raise RuntimeOperationError("explicit nonzero build UID/GID required")
     for key in ("startup_timeout_seconds", "execution_timeout_seconds", "termination_grace_seconds"):
         _positive(value[key], key)
     if (

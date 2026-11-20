@@ -10,7 +10,8 @@ from .boot import current_boot_id
 from .durability import replace_json, remove_file, _blocked_projects
 from .errors import RecoveryRequired, RuntimeOperationError, PersistenceError
 from .retention import Retention, TOKEN, WINDOW_SECONDS
-from .build_protocol import canonical_request, identity
+from .build_protocol import (canonical_registration, canonical_request, identity,
+                             INHERITED_EXECUTION_CONTRACT)
 
 
 class BuildJobs:
@@ -36,6 +37,13 @@ class BuildJobs:
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise RecoveryRequired(f'cannot read build record {entity}: {exc}') from exc
 
+    @staticmethod
+    def require_inherited(raw):
+        # Historical identity-bearing records are evidence only. Do not
+        # reinterpret their old effective-user selection after an upgrade.
+        if raw.get('execution_contract') != INHERITED_EXECUTION_CONTRACT:
+            raise RecoveryRequired('legacy build identity is inspection-only; refusing execution replay')
+
     def save(self, raw):
         replace_json(self.path(raw['entity']), raw)
 
@@ -49,6 +57,8 @@ class BuildJobs:
                 target = marker['build_entity']
                 absent = marker.get('preparing') is True and not self.path(target).exists()
                 record = None if absent else self.load(target)
+                if record is not None:
+                    self.require_inherited(record)
                 if target != entity and record is not None:
                     if target.startswith('job:'):
                         record = self.refresh(record['job_id'])
@@ -62,7 +72,10 @@ class BuildJobs:
                 _blocked_projects.discard(self.project.path)
         for path in sorted(self.directory.glob('*.json')):
             raw = self.load('job:'+path.stem)
-            if raw['state'] in {'starting', 'unknown', 'cancelling'} and raw['entity'] != entity:
+            if raw['state'] in {'starting', 'unknown', 'cancelling'}:
+                self.require_inherited(raw)
+                if raw['entity'] == entity:
+                    continue
                 raw = self.refresh(raw['job_id'])
                 if raw['state']=='unknown':
                     raise RecoveryRequired(f"build job {path.stem} has an unknown outcome")
@@ -103,15 +116,17 @@ class BuildJobs:
 
     def register(self, resource_id, **intent):
         entity = 'resource:'+identity(resource_id)
-        intent = json.loads(json.dumps(intent, default=str, allow_nan=False))
+        intent = canonical_registration(intent)
         path = self.path(entity)
         if path.exists():
             raw = self.load(entity)
+            self.require_inherited(raw)
             if raw['intent'] != intent: raise RuntimeOperationError('resource identity belongs to different inputs')
             if raw['state'] == 'ready': return raw
             if raw['state'] == 'released': raise RuntimeOperationError('resource registration already released')
         else:
-            raw = {'schema':1, 'entity':entity, 'resource_id':resource_id, 'intent':intent, 'state':'registering'}
+            raw = {'schema':1, 'execution_contract':INHERITED_EXECUTION_CONTRACT,
+                   'entity':entity, 'resource_id':resource_id, 'intent':intent, 'state':'registering'}
             self.point(entity, preparing=True)
             self.save(raw)
         self.point(entity)
@@ -129,18 +144,23 @@ class BuildJobs:
             raise RuntimeOperationError(str(exc)) from exc
         if self.path(entity).exists():
             raw = self.load(entity)
+            self.require_inherited(raw)
             if raw['request'] != request: raise RuntimeOperationError('request identity belongs to different build intent')
             if raw.get('completed_at') is not None and self.clock().clock()['clock'] >= Retention.deadline(request_id, raw['completed_at']):
                 raise RuntimeOperationError('build request identity expired')
             return raw
         self.validate_id(request_id)
         resource = self.load('resource:'+request['build_root_id'])
+        self.require_inherited(resource)
         if resource['state'] != 'ready': raise RecoveryRequired('build resource is not ready')
         for path in self.directory.glob('*.json'):
             prior = self.load('job:'+path.stem)
             if prior['request']['build_root_id'] == request['build_root_id'] and not prior['process_cleanup_complete']:
+                self.require_inherited(prior)
+            if prior['request']['build_root_id'] == request['build_root_id'] and not prior['process_cleanup_complete']:
                 raise RuntimeOperationError('build workspaces already have an unfinished writer')
-        raw = dict(schema=1, entity=entity, job_id=job_id, request_id=request_id, request=request,
+        raw = dict(schema=1, execution_contract=INHERITED_EXECUTION_CONTRACT,
+                   entity=entity, job_id=job_id, request_id=request_id, request=request,
                    runtime_id='build-'+job_id, state='prepared', outcome=None, error=None,
                    invocation_id=None, journal_reference=None, exit_code=None, signal=None,
                    process_cleanup_complete=False, resources_released=False, completed_at=None,
@@ -160,6 +180,7 @@ class BuildJobs:
 
     def refresh(self, job_id):
         raw = self.load('job:'+identity(job_id))
+        self.require_inherited(raw)
         if raw['process_cleanup_complete']: return raw
         self.point(raw['entity'])
         if raw['state'] == 'prepared':
@@ -238,6 +259,7 @@ class BuildJobs:
 
     def cancel(self, job_id):
         raw = self.load('job:'+identity(job_id))
+        self.require_inherited(raw)
         if raw['process_cleanup_complete']: return raw
         self.point(raw['entity'])
         raw.update(cancel_requested=True,state='cancelling')
@@ -247,6 +269,7 @@ class BuildJobs:
 
     def release_job(self, job_id):
         raw = self.load('job:'+identity(job_id))
+        self.require_inherited(raw)
         if not raw['process_cleanup_complete']: raise RuntimeOperationError('cannot release unfinished build job')
         self.point(raw['entity'])
         raw['resources_released']=True
@@ -255,6 +278,7 @@ class BuildJobs:
 
     def release_root(self, resource_id):
         raw = self.load('resource:'+identity(resource_id))
+        self.require_inherited(raw)
         if raw['state']=='released': return raw
         for path in self.directory.glob('*.json'):
             job=self.load('job:'+path.stem)
@@ -291,6 +315,9 @@ class BuildJobs:
             identity(item['resource_id'])
             for job_id in item['job_ids']: identity(job_id)
         for item in raw['deletions']:
+            self.require_inherited(self.load('resource:'+item['resource_id']))
+            for job_id in item['job_ids']:
+                self.require_inherited(self.load('job:'+job_id))
             self.call('forget',build_root_id=item['resource_id'])
             for job_id in item['job_ids']: remove_file(self.path('job:'+job_id))
             remove_file(self.path('resource:'+item['resource_id']))
