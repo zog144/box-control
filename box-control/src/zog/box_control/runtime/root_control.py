@@ -147,7 +147,48 @@ class RootControlSystemdTransport:
             return self._request('build_registration_status', project_root=str(project_root), resource_id=resource_id)
 
     def build_call(self, operation, *, project_root, **kwargs):
-        return self._request('build_' + operation, project_root=str(project_root), **kwargs)
+        """Versioned build RPC; the privileged server owns the peer identity.
+
+        No identity selectors, uid/gid, User/Group, or caller-provided PID.
+        Every request is sent by this process over AF_UNIX. Root-control must
+        validate the v2 wire contract and SO_PEERCRED, rejecting root peers.
+        """
+        from ..build_protocol import (
+            INHERITED_EXECUTION_CONTRACT, canonical_registration,
+            canonical_request, identity,
+        )
+        allowed = {
+            'register': {'resource_id', 'prepared_root', 'source_directory',
+                         'output_directory', 'input_manifest_id'},
+            'prepare': {'job_id', 'request'},
+            'start': {'job_id', 'request'},
+            'observe': {'job_id', 'build_root_id'},
+            'cleanup': {'job_id', 'build_root_id'},
+            'cancel': {'job_id', 'build_root_id', 'expected_invocation_id'},
+            'release': {'build_root_id'},
+            'forget': {'build_root_id'},
+        }
+        if (operation not in allowed or set(kwargs) != allowed[operation]
+                or not isinstance(project_root, (str, Path))
+                or not Path(project_root).is_absolute()):
+            raise RuntimeOperationError('unsupported inherited build RPC fields')
+        if operation == 'register':
+            identity(kwargs['resource_id'])
+            canonical_registration({k: v for k, v in kwargs.items()
+                                    if k != 'resource_id'})
+        elif operation in {'prepare', 'start'}:
+            identity(kwargs['job_id'])
+            canonical_request(kwargs['request'])
+        else:
+            identity(kwargs['build_root_id'])
+            if 'job_id' in kwargs:
+                identity(kwargs['job_id'])
+            if operation == 'cancel':
+                value = kwargs['expected_invocation_id']
+                if value is not None and not isinstance(value, str):
+                    raise RuntimeOperationError('invalid build invocation identity')
+        return self._request('build_' + operation, project_root=str(project_root),
+                             build_contract=INHERITED_EXECUTION_CONTRACT, **kwargs)
 
     def version(self) -> int:
         return int(self._request("systemd_version"))
