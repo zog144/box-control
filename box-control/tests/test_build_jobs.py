@@ -627,3 +627,39 @@ def test_real_transport_emits_versioned_peer_bound_envelope():
             output_directory='/output', input_manifest_id='manifest',
             execution_group_id=24202)
     assert len(sent) == 1
+
+
+def test_real_transport_versions_prepare_start_and_recovery_without_identity_selectors(setup):
+    from zog.box_control.build_protocol import INHERITED_EXECUTION_CONTRACT
+    from zog.box_control.runtime.root_control import RootControlSystemdTransport
+    c, t, request = setup
+    transport = RootControlSystemdTransport(Path('/run/zog/root-control.sock'))
+    sent = []
+    transport._request = lambda operation, **payload: sent.append((operation, payload)) or {}
+    job_id = 'b' * 32
+    root_id = request['build_root_id']
+    calls = (
+        ('prepare', {'job_id': job_id, 'request': request}),
+        ('start', {'job_id': job_id, 'request': request}),
+        ('observe', {'job_id': job_id, 'build_root_id': root_id}),
+        ('cleanup', {'job_id': job_id, 'build_root_id': root_id}),
+        ('cancel', {'job_id': job_id, 'build_root_id': root_id,
+                    'expected_invocation_id': None}),
+        ('release', {'build_root_id': root_id}),
+        ('forget', {'build_root_id': root_id}),
+    )
+    for operation, fields in calls:
+        transport.build_call(operation, project_root=c.project.path, **fields)
+    assert [op for op, _ in sent] == ['build_' + op for op, _ in calls]
+    for operation, payload in sent:
+        assert payload['build_contract'] == INHERITED_EXECUTION_CONTRACT
+        assert payload['project_root'] == str(c.project.path)
+        assert not any(selector in payload for selector in (
+            'execution_user_id', 'execution_group_id', 'uid', 'gid', 'User', 'Group'))
+    assert sent[0][1]['request'] == request
+    assert sent[1][1]['request'] == request
+    with pytest.raises(RuntimeOperationError, match='unsupported fields'):
+        transport.build_call(
+            'start', project_root=c.project.path, job_id=job_id,
+            request=dict(request, User='root'))
+    assert len(sent) == len(calls)
