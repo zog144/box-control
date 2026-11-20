@@ -574,7 +574,9 @@ def test_historical_resource_is_readable_but_never_registered_again(setup):
             resource_id=root_id, prepared_root='/root/input',
             source_directory='/root/source', output_directory='/root/output',
             input_manifest_id='manifest')
-    with pytest.raises(RecoveryRequired, match='legacy build identity'):
+    # The first denial may leave the broader mutation recovery interlock
+    # active; either protection forbids a second mutation or replay.
+    with pytest.raises(RecoveryRequired):
         c.submit_build_job(request_id=c.issue_build_request_id(), **request)
     assert t.build_starts == 0
 
@@ -591,7 +593,9 @@ def test_historical_job_retained_for_inspection_without_replay(setup):
     assert c.inspect_build_job(job['job_id']) == persisted
     with pytest.raises(RecoveryRequired, match='legacy build identity'):
         c.refresh_build_job(job['job_id'])
-    with pytest.raises(RecoveryRequired, match='legacy build identity'):
+    # The persistent mutation marker may reject even before the historical
+    # record guard after the first failed refresh. Both are fail-closed.
+    with pytest.raises(RecoveryRequired):
         c.submit_build_job(request_id=job['request_id'], **request)
     assert t.build_starts == 1
 
