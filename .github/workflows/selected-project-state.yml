@@ -1,0 +1,41 @@
+name: Selected Project state outside controller home
+on:
+  push:
+    branches: [regular/issuer-and-inherited-build-20261114]
+    paths:
+      - 'box-control/src/zog/box_control/project.py'
+      - 'box-control/tests/test_selected_project_state.py'
+      - '.github/workflows/selected-project-state.yml'
+  pull_request:
+    paths:
+      - 'box-control/src/zog/box_control/project.py'
+      - 'box-control/tests/test_selected_project_state.py'
+      - '.github/workflows/selected-project-state.yml'
+permissions:
+  contents: read
+jobs:
+  project-state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12','3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install source-only tests
+        run: python -m pip install 'pytest>=8,<10'
+      - name: Explicit Project root and state integrity
+        env:
+          PYTHONPATH: ${{ github.workspace }}/box-control/src
+        run: |
+          python -m compileall -q box-control/src/zog/box_control/project.py
+          python -m pytest -q -ra box-control/tests/test_selected_project_state.py
+      - if: always()
+        run: |
+          echo 'Source-only: no AWS, compiler Host, request #63 replay, Project ownership migration or service activation.' >> "$GITHUB_STEP_SUMMARY"
