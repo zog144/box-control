@@ -18,6 +18,7 @@ class BuildJobs:
     def __init__(self, control):
         self.control = control
         self.project = control.project
+        self.project.validate_external_state()
         self.directory = self.project.state_dir / 'build-job'
         self.resources = self.project.state_dir / 'build-resource'
         self.transport = control.systemd_transport
@@ -293,32 +294,128 @@ class BuildJobs:
         self.save(raw)
         return raw
 
+    @staticmethod
+    def _prune_digest(record):
+        return hashlib.sha256(json.dumps(record, sort_keys=True,
+            separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+    def _prune_item(self, resource, jobs, now):
+        """Create evidence only from complete, expired inherited records."""
+        if (resource.get('execution_contract') != INHERITED_EXECUTION_CONTRACT
+                or resource['state'] != 'released'
+                or now < resource.get('released_at', now) + WINDOW_SECONDS):
+            return None
+        rid = identity(resource['resource_id'])
+        related = [j for j in jobs if j['request']['build_root_id'] == rid]
+        if any(j.get('execution_contract') != INHERITED_EXECUTION_CONTRACT
+               or not j['resources_released'] or not j['process_cleanup_complete']
+               or j['completed_at'] is None
+               or now < Retention.deadline(j['request_id'], j['completed_at'])
+               for j in related):
+            return None
+        return {'resource_id': rid, 'resource_sha256': self._prune_digest(resource),
+                'jobs': {identity(j['job_id']): self._prune_digest(j) for j in related},
+                'forgotten': False}
+
+    def _validate_pruning(self, raw):
+        """Verify the whole plan before any remote or local deletion."""
+        try:
+            if (type(raw) is not dict or set(raw) != {'schema', 'execution_contract', 'deletions'}
+                    or raw['schema'] != 2
+                    or raw['execution_contract'] != INHERITED_EXECUTION_CONTRACT
+                    or type(raw['deletions']) is not list or not raw['deletions']):
+                raise ValueError('unsupported pruning intent')
+            seen_resources, seen_jobs = set(), set()
+            for item in raw['deletions']:
+                if (type(item) is not dict or set(item) !=
+                        {'resource_id', 'resource_sha256', 'jobs', 'forgotten'}
+                        or type(item['forgotten']) is not bool or type(item['jobs']) is not dict):
+                    raise ValueError('invalid pruning entry')
+                rid = identity(item['resource_id'])
+                if rid in seen_resources:
+                    raise ValueError('duplicate resource')
+                seen_resources.add(rid)
+                entries = [('resource:' + rid, item['resource_sha256'])]
+                for job_id, digest in item['jobs'].items():
+                    identity(job_id)
+                    if job_id in seen_jobs:
+                        raise ValueError('duplicate job')
+                    seen_jobs.add(job_id)
+                    entries.append(('job:' + job_id, digest))
+                for entity, digest in entries:
+                    if (type(digest) is not str or len(digest) != 64
+                            or any(c not in '0123456789abcdef' for c in digest)):
+                        raise ValueError('invalid record digest')
+                    if not self.path(entity).exists():
+                        if not item['forgotten']:
+                            raise ValueError('record missing before acknowledged forget')
+                        continue
+                    record = self.load(entity)
+                    self.require_inherited(record)
+                    if self._prune_digest(record) != digest:
+                        raise ValueError('pruning record changed')
+                # A newly appearing job must not be orphaned by this plan.
+                for path in self.directory.glob('*.json'):
+                    job = self.load('job:' + path.stem)
+                    if job['request']['build_root_id'] == rid and job['job_id'] not in item['jobs']:
+                        raise ValueError('unplanned job retains pruning resource')
+        except (ValueError, TypeError, KeyError, RuntimeOperationError) as exc:
+            raise RecoveryRequired(f'invalid build pruning journal: {exc}') from exc
+
     def prune(self):
         journal = self.project.state_dir/'build-pruning.json'
         if not journal.exists():
             resources = [self.load('resource:'+p.stem) for p in self.resources.glob('*.json')]
             if not any(r['state']=='released' for r in resources): return
             now = self.clock().clock()['clock']
-            selected=[]
-            jobs=[self.load('job:'+p.stem) for p in self.directory.glob('*.json')]
-            for resource in resources:
-                if resource['state']!='released' or now < resource.get('released_at',now)+WINDOW_SECONDS: continue
-                related=[j for j in jobs if j['request']['build_root_id']==resource['resource_id']]
-                if any(not j['resources_released'] or not j['process_cleanup_complete'] or j['completed_at'] is None
-                       or now < Retention.deadline(j['request_id'],j['completed_at']) for j in related): continue
-                selected.append({'resource_id':resource['resource_id'],'job_ids':[j['job_id'] for j in related]})
+            jobs = [self.load('job:'+p.stem) for p in self.directory.glob('*.json')]
+            selected = [item for resource in resources
+                        if (item := self._prune_item(resource, jobs, now)) is not None]
             if not selected: return
-            replace_json(journal,{'schema':1,'deletions':selected})
-        raw=json.loads(journal.read_text())
-        if raw['schema']!=1: raise RecoveryRequired('invalid build pruning journal')
+            raw = {'schema': 2, 'execution_contract': INHERITED_EXECUTION_CONTRACT,
+                   'deletions': selected}
+            self._validate_pruning(raw)
+            replace_json(journal, raw)
+        else:
+            try:
+                raw = json.loads(journal.read_text())
+            except (OSError, ValueError) as exc:
+                raise RecoveryRequired(f'cannot read build pruning journal: {exc}') from exc
+            # A historical plan has no proof of which records were validated
+            # or whether forget succeeded. Upgrade only if every referenced
+            # record still exists and the complete selection is eligible.
+            if isinstance(raw, dict) and raw.get('schema') == 1:
+                try:
+                    if set(raw) != {'schema', 'deletions'} or not raw['deletions']:
+                        raise ValueError('invalid historical pruning intent')
+                    now = self.clock().clock()['clock']
+                    jobs = [self.load('job:'+p.stem) for p in self.directory.glob('*.json')]
+                    selected = []
+                    for old in raw['deletions']:
+                        if set(old) != {'resource_id', 'job_ids'}:
+                            raise ValueError('invalid historical pruning entry')
+                        resource = self.load('resource:' + identity(old['resource_id']))
+                        item = self._prune_item(resource, jobs, now)
+                        if (item is None or type(old['job_ids']) is not list
+                                or sorted(old['job_ids']) != sorted(item['jobs'])):
+                            raise ValueError('historical pruning evidence incomplete')
+                        selected.append(item)
+                    raw = {'schema': 2, 'execution_contract': INHERITED_EXECUTION_CONTRACT,
+                           'deletions': selected}
+                    self._validate_pruning(raw)
+                except (ValueError, KeyError, TypeError, RuntimeOperationError) as exc:
+                    raise RecoveryRequired('historical pruning requires inspection; retained journal') from exc
+                replace_json(journal, raw)
+        self._validate_pruning(raw)
         for item in raw['deletions']:
-            identity(item['resource_id'])
-            for job_id in item['job_ids']: identity(job_id)
-        for item in raw['deletions']:
-            self.require_inherited(self.load('resource:'+item['resource_id']))
-            for job_id in item['job_ids']:
-                self.require_inherited(self.load('job:'+job_id))
-            self.call('forget',build_root_id=item['resource_id'])
-            for job_id in item['job_ids']: remove_file(self.path('job:'+job_id))
-            remove_file(self.path('resource:'+item['resource_id']))
+            rid = item['resource_id']
+            if not item['forgotten']:
+                # Server forget is idempotent for a released/absent resource.
+                # A lost reply may repeat only forget, never prepare/start.
+                self.call('forget', build_root_id=rid)
+                item['forgotten'] = True
+                replace_json(journal, raw)
+            for job_id in item['jobs']:
+                remove_file(self.path('job:' + job_id))
+            remove_file(self.path('resource:' + rid))
         remove_file(journal)
