@@ -663,3 +663,124 @@ def test_real_transport_versions_prepare_start_and_recovery_without_identity_sel
             'start', project_root=c.project.path, job_id=job_id,
             request=dict(request, User='root'))
     assert len(sent) == len(calls)
+
+
+@pytest.mark.parametrize("boundary", ("job", "resource", "journal"))
+def test_pruning_resumes_after_each_local_deletion(setup, monkeypatch, boundary):
+    from zog.box_control import build_jobs as module
+    c, t, request = setup
+    job = submit(setup)
+    c.release_build_job(job['job_id'])
+    c.release_build_root(request['build_root_id'])
+    monkeypatch.setattr('time.time', lambda: job['completed_at'] + 49 * 3600)
+    store = module.BuildJobs(c)
+    journal = c.project.state_dir / 'build-pruning.json'
+    selected = {
+        "job": store.path('job:' + job['job_id']),
+        "resource": store.path('resource:' + request['build_root_id']),
+        "journal": journal,
+    }[boundary]
+    calls = []
+    original_call = t.build_call
+    def trace(operation, **kwargs):
+        calls.append(operation)
+        return original_call(operation, **kwargs)
+    monkeypatch.setattr(t, 'build_call', trace)
+    original_remove = module.remove_file
+    def interrupt(path):
+        original_remove(path)
+        if path == selected:
+            raise PersistenceError('interrupted after durable deletion')
+    monkeypatch.setattr(module, 'remove_file', interrupt)
+    with pytest.raises(PersistenceError):
+        store.prune()
+    if boundary != 'journal':
+        assert json.loads(journal.read_text())['deletions'][0]['forgotten'] is True
+    monkeypatch.setattr(module, 'remove_file', original_remove)
+    module.BuildJobs(c).prune()
+    assert not journal.exists()
+    assert not store.path('job:' + job['job_id']).exists()
+    assert not store.path('resource:' + request['build_root_id']).exists()
+    assert calls == ['forget']
+    assert t.build_starts == 1
+
+
+@pytest.mark.parametrize("damage", ("missing", "changed", "legacy"))
+def test_pruning_rejects_unacknowledged_missing_or_changed_records(setup, monkeypatch, damage):
+    from zog.box_control import build_jobs as module
+    c, t, request = setup
+    job = submit(setup)
+    c.release_build_job(job['job_id'])
+    c.release_build_root(request['build_root_id'])
+    monkeypatch.setattr('time.time', lambda: job['completed_at'] + 49 * 3600)
+    store = module.BuildJobs(c)
+    journal = c.project.state_dir / 'build-pruning.json'
+    t.failure = 'forget'
+    with pytest.raises(RecoveryRequired):
+        store.prune()
+    original = journal.read_bytes()
+    record_path = store.path('job:' + job['job_id'])
+    if damage == 'missing':
+        record_path.unlink()
+    else:
+        record = store.load('job:' + job['job_id'])
+        if damage == 'legacy':
+            record.pop('execution_contract')
+        else:
+            record['error'] = 'unexpected record replacement'
+        store.save(record)
+    t.failure = None
+    calls = []
+    def deny(operation, **kwargs):
+        calls.append(operation)
+        pytest.fail("invalid pruning plan invoked backend")
+    monkeypatch.setattr(t, 'build_call', deny)
+    with pytest.raises(RecoveryRequired):
+        store.prune()
+    assert journal.read_bytes() == original
+    assert store.path('resource:' + request['build_root_id']).exists()
+    assert not calls and t.build_starts == 1
+
+
+def test_expired_legacy_records_are_preserved_not_selected_for_pruning(setup, monkeypatch):
+    from zog.box_control import build_jobs as module
+    c, t, request = setup
+    job = submit(setup)
+    c.release_build_job(job['job_id'])
+    c.release_build_root(request['build_root_id'])
+    store = module.BuildJobs(c)
+    resource = store.load('resource:' + request['build_root_id'])
+    resource.pop('execution_contract')
+    store.save(resource)
+    monkeypatch.setattr('time.time', lambda: job['completed_at'] + 49 * 3600)
+    monkeypatch.setattr(t, 'build_call', lambda *a, **k: pytest.fail('legacy forget'))
+    store.prune()
+    assert store.load('resource:' + request['build_root_id']) == resource
+    assert store.load('job:' + job['job_id'])
+    assert not (c.project.state_dir / 'build-pruning.json').exists()
+
+
+@pytest.mark.parametrize("partial", (False, True))
+def test_historical_pruning_plan_requires_complete_inherited_evidence(setup, monkeypatch, partial):
+    from zog.box_control import build_jobs as module
+    c, t, request = setup
+    job = submit(setup)
+    c.release_build_job(job['job_id'])
+    c.release_build_root(request['build_root_id'])
+    store = module.BuildJobs(c)
+    monkeypatch.setattr('time.time', lambda: job['completed_at'] + 49 * 3600)
+    journal = c.project.state_dir / 'build-pruning.json'
+    module.replace_json(journal, {'schema': 1, 'deletions': [{
+        'resource_id': request['build_root_id'], 'job_ids': [job['job_id']]}]})
+    original = journal.read_bytes()
+    if partial:
+        store.path('job:' + job['job_id']).unlink()
+        monkeypatch.setattr(t, 'build_call', lambda *a, **k: pytest.fail('unverified forget'))
+        with pytest.raises(RecoveryRequired):
+            store.prune()
+        assert journal.read_bytes() == original
+    else:
+        store.prune()
+        assert not journal.exists()
+        assert not store.path('resource:' + request['build_root_id']).exists()
+    assert t.build_starts == 1
