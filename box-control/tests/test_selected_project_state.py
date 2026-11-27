@@ -148,3 +148,88 @@ def test_normal_in_home_nonroot_semantics_are_unchanged(tmp_path, monkeypatch):
     project.require_state_allowed()
     project.ensure_state()
     assert project.state_dir.is_dir()
+
+
+@pytest.mark.parametrize("name", ("build-job", "build-resource", "operation",
+                                 "application-storage", "workspace", "session-recovery"))
+def test_actual_build_admission_rejects_redirected_metadata_store(
+        external_project, tmp_path, name):
+    from zog.box_control.api import BoxControl
+    project = external_project
+    project.state_dir.mkdir()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    (foreign / "a.json").write_text("foreign evidence")
+    (project.state_dir / name).symlink_to(foreign, target_is_directory=True)
+    class NoTransport:
+        def build_call(self, *args, **kwargs):
+            pytest.fail("transport called after unsafe state admission")
+    control = BoxControl(project, systemd_transport=NoTransport())
+    with pytest.raises(ConfigurationError):
+        control.register_build_root(
+            resource_id="a" * 32, prepared_root="/input",
+            source_directory="/source", output_directory="/output",
+            input_manifest_id="manifest")
+    assert not project.lock_file.exists()
+    assert sorted(p.name for p in foreign.iterdir()) == ["a.json"]
+    assert (foreign / "a.json").read_text() == "foreign evidence"
+
+
+@pytest.mark.parametrize("name", ("build-job", "build-resource", "operation"))
+@pytest.mark.parametrize("kind", ("symlink", "hardlink", "fifo", "directory"))
+def test_metadata_record_must_be_single_link_regular_file(
+        external_project, tmp_path, name, kind):
+    import os
+    project = external_project
+    directory = project.state_dir / name
+    directory.mkdir(parents=True)
+    target = directory / ("a" * 32 + ".json")
+    foreign = tmp_path / "foreign-record"
+    foreign.write_text("keep")
+    if kind == "symlink":
+        target.symlink_to(foreign)
+    elif kind == "hardlink":
+        os.link(foreign, target)
+    elif kind == "fifo":
+        os.mkfifo(target)
+    else:
+        target.mkdir()
+    with pytest.raises(ConfigurationError, match="not a real file"):
+        project.require_state_allowed()
+    assert foreign.read_text() == "keep"
+
+
+@pytest.mark.parametrize("name", ("runtime/references.json", "request-identity.json",
+                                 "build-request-identity.json", "retention-incomplete.json",
+                                 "build-pruning.json"))
+def test_additional_control_files_cannot_redirect(external_project, tmp_path, name):
+    project = external_project
+    target = project.state_dir / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "foreign"
+    outside.write_text("keep")
+    target.symlink_to(outside)
+    with pytest.raises(ConfigurationError, match="not a real file"):
+        project.require_state_allowed()
+
+
+def test_payload_symlinks_are_not_controller_metadata(external_project):
+    project = external_project
+    project.ensure_state()
+    for root in (project.rootfs_dir, project.mounts_dir,
+                 project.state_dir / "image-build" / "attempts"):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "payload-link").symlink_to("/usr/bin")
+    project.require_state_allowed()
+
+
+def test_read_only_build_inspection_rejects_redirected_records(external_project, tmp_path):
+    from zog.box_control.api import BoxControl
+    project = external_project
+    project.state_dir.mkdir()
+    outside = tmp_path / "foreign"
+    outside.mkdir()
+    (project.state_dir / "build-job").symlink_to(outside)
+    with pytest.raises(ConfigurationError):
+        BoxControl(project).inspect_build_job("a" * 32)
+    assert not project.lock_file.exists()
