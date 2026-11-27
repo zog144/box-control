@@ -1,0 +1,50 @@
+name: Selected Project state outside controller home
+on:
+  push:
+    branches: [regular/issuer-and-inherited-build-20261114]
+    paths:
+      - 'box-control/src/zog/box_control/project.py'
+      - 'box-control/tests/test_selected_project_state.py'
+      - '.github/workflows/selected-project-state.yml'
+  pull_request:
+    paths:
+      - 'box-control/src/zog/box_control/project.py'
+      - 'box-control/tests/test_selected_project_state.py'
+      - '.github/workflows/selected-project-state.yml'
+permissions:
+  contents: read
+jobs:
+  project-state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12','3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zog144/zog
+          ref: d47d86b363824c718d9c165124cb55bbed12e0f9
+          path: companions/zog
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install source-only support and assert exact companion
+        run: |
+          test "$(git -C companions/zog rev-parse HEAD)" = d47d86b363824c718d9c165124cb55bbed12e0f9
+          python -m pip install 'pytest>=8,<10' 'dbus-next==0.2.3'
+          cp -a box-control/src/zog/box_control/. companions/zog/src/zog/box_control/
+      - name: Explicit Project root and state integrity
+        env:
+          PYTHONPATH: ${{ github.workspace }}/companions/zog/src
+        run: |
+          python -m compileall -q box-control/src/zog/box_control/project.py
+          python -m pytest -q -ra box-control/tests/test_selected_project_state.py
+      - if: always()
+        run: |
+          echo 'Source-only: no AWS, compiler Host, request #63 replay, Project ownership migration or service activation.' >> "$GITHUB_STEP_SUMMARY"
