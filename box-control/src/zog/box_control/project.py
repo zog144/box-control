@@ -85,31 +85,68 @@ class Project:
                 raise ConfigurationError(f"selected Project path is inaccessible: {current}") from exc
             if not stat.S_ISDIR(mode):
                 raise ConfigurationError(f"selected Project ancestor is not a real directory: {current}")
-        for directory in self._state_directories():
-            if not directory.is_relative_to(self.path):
-                raise ConfigurationError("Project state directory escapes selected Project")
-            try:
-                mode = directory.lstat().st_mode
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise ConfigurationError(f"cannot inspect selected Project state: {directory}") from exc
-            if not stat.S_ISDIR(mode):
-                raise ConfigurationError(f"Project state path is not a real directory: {directory}")
-        # Protect the two preexisting files read/written directly by the
-        # controller and the interlock against redirection outside state/.
-        for file in (self.lock_file, self.state_file,
-                     self.state_dir / "mutation-incomplete.json",
-                     self.state_dir / "session-recovery-pending.json"):
-            try:
-                mode = file.lstat().st_mode
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise ConfigurationError(f"cannot inspect selected Project state file: {file}") from exc
-            if not stat.S_ISREG(mode):
-                raise ConfigurationError(f"Project state file is not a real file: {file}")
+        self._validate_controller_state()
         return True
+
+    def _validate_controller_state(self):
+        """Check controller metadata only, not application/build payload trees.
+
+        Called before locking or recovery, and on direct build record access.
+        Missing paths may be created by their ordinary owners; existing
+        symlinks, special files and hard-linked metadata are not admitted.
+        The selected Host must serialize administrative filesystem changes.
+        """
+        if self.state_dir != self.path / "state":
+            raise ConfigurationError("Project state directory escapes selected Project")
+
+        def check(path, *, directory):
+            if not path.is_relative_to(self.state_dir) or ".." in path.parts:
+                raise ConfigurationError("Project state path escapes selected Project")
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                return False
+            except OSError as exc:
+                raise ConfigurationError(f"cannot inspect selected Project state: {path}") from exc
+            if directory:
+                if not stat.S_ISDIR(info.st_mode):
+                    raise ConfigurationError(f"Project state path is not a real directory: {path}")
+            elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ConfigurationError(f"Project state file is not a real file with one link: {path}")
+            return True
+
+        # Flat metadata stores used by mutation admission, recovery, and
+        # retention. Do not descend into rootfs, mounts, image-build or
+        # repository payloads, where legitimate symlinks are expected.
+        stores = (
+            self.application_request_dir, self.application_request_result_dir,
+            *(self.state_dir / name for name in (
+                "build-job", "build-resource", "operation", "application-storage",
+                "workspace", "session-recovery")),
+        )
+        # Check state itself before any child lstat/iteration.
+        for directory in (*self._state_directories(), *stores):
+            check(directory, directory=True)
+        for file in (
+            self.lock_file, self.state_file, self.runtime_reference_file,
+            *(self.state_dir / name for name in (
+                "mutation-incomplete.json", "session-recovery-pending.json",
+                "request-identity.json", "build-request-identity.json",
+                "retention-incomplete.json", "build-pruning.json")),
+        ):
+            check(file, directory=False)
+        for directory in stores:
+            if check(directory, directory=True):
+                for entry in directory.iterdir():
+                    # Atomic JSON replacement also leaves .pending evidence.
+                    # All entries in these flat stores are controller metadata.
+                    check(entry, directory=False)
+
+    def validate_external_state(self):
+        """Read-only build inspection gets the same external root path checks."""
+        if not self.is_inside_home():
+            self._require_selected_root_state()
+
 
     def ensure_state(self):
         self.require_state_allowed()
